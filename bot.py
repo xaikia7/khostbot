@@ -949,12 +949,13 @@ def route_text(message):
 # =============================================================================
 
 @bot.message_handler(content_types=["document"])
-@guard
 def route_document(message):
-    """Handle file uploads - ALWAYS WORKS"""
-    # Always handle file upload regardless of state
-    handle_file_upload(message)
-
+    """Handle file uploads - NO GUARD DECORATOR"""
+    try:
+        handle_file_upload(message)
+    except Exception as e:
+        logger.error(f"Error in route_document: {e}")
+        safe_send(message.from_user.id, f"❌ Error: {e}")
 # =============================================================================
 #  MAIN MENU HANDLERS
 # =============================================================================
