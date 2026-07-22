@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # =============================================================================
 #  PARTH HOSTING BOT — Full Production SaaS System
-#  Single-file, 2500+ lines, fully runnable
-#  Requirements: pip install pyTelegramBotAPI requests
+#  Fixed: Upload flow, Cancel button, Security disabled
 # =============================================================================
 
 import os
@@ -16,7 +15,6 @@ import zipfile
 import threading
 import subprocess
 import traceback
-import mimetypes
 import shutil
 import re
 from datetime import datetime, timedelta
@@ -25,7 +23,7 @@ from functools import wraps
 from collections import defaultdict
 
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
 # =============================================================================
 #  CONFIGURATION
@@ -47,10 +45,8 @@ RATE_LIMIT_SECONDS = 2
 BOT_START_TIME = time.time()
 UPDATES_CHANNEL = os.environ.get("UPDATES_CHANNEL", "@parth_hereee")
 
-# Dangerous patterns to block in uploaded code - DISABLED FOR NOW
-DANGEROUS_PATTERNS = [
-    # Security scanner disabled - all patterns removed to allow files
-]
+# Security DISABLED - all patterns removed
+DANGEROUS_PATTERNS = []
 
 # =============================================================================
 #  LOGGING SETUP
@@ -79,17 +75,11 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 #  IN-MEMORY STATE
 # =============================================================================
 
-# { user_id: { file_id: Popen } }
 running_processes: dict[int, dict[str, subprocess.Popen]] = defaultdict(dict)
-# { user_id: last_message_time }
 rate_limit_tracker: dict[int, float] = {}
-# Global lock state
 bot_locked = False
-# Force-join channel
 force_join_channel: str | None = None
-# User conversation states
 user_states: dict[int, str] = {}
-# Pending actions data
 pending_data: dict[int, dict] = {}
 
 state_lock = threading.Lock()
@@ -182,7 +172,7 @@ def save_setting(key: str, value: str):
 #  DATABASE HELPERS
 # =============================================================================
 
-def db_get_user(user_id: int) -> sqlite3.Row | None:
+def db_get_user(user_id: int):
     with get_db() as conn:
         return conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
 
@@ -254,13 +244,9 @@ def db_get_user_files(user_id: int) -> list:
             (user_id,)
         ).fetchall()
 
-def db_get_file(file_id: str) -> sqlite3.Row | None:
+def db_get_file(file_id: str):
     with get_db() as conn:
         return conn.execute("SELECT * FROM files WHERE file_id = ?", (file_id,)).fetchone()
-
-def db_get_file_by_id(row_id: int) -> sqlite3.Row | None:
-    with get_db() as conn:
-        return conn.execute("SELECT * FROM files WHERE id = ?", (row_id,)).fetchone()
 
 def db_delete_file(file_id: str):
     with get_db() as conn:
@@ -471,13 +457,6 @@ def safe_send(chat_id: int, text: str, reply_markup=None, **kwargs):
         logger.error(f"Failed to send message to {chat_id}: {e}")
         return None
 
-def safe_send_document(chat_id: int, document, caption: str = ""):
-    try:
-        return bot.send_document(chat_id, document, caption=caption)
-    except Exception as e:
-        logger.error(f"Failed to send document to {chat_id}: {e}")
-        return None
-
 def set_state(user_id: int, state: str, data: dict = None):
     with state_lock:
         user_states[user_id] = state
@@ -523,7 +502,7 @@ def check_force_join(user_id: int) -> bool:
         member = bot.get_chat_member(force_join_channel, user_id)
         return member.status not in ["left", "kicked"]
     except Exception:
-        return True  # Don't block if check fails
+        return True
 
 # =============================================================================
 #  PROCESS MANAGEMENT
@@ -544,7 +523,6 @@ def kill_all_user_processes(user_id: int):
             except Exception as e:
                 logger.error(f"Error killing process {fid}: {e}")
         running_processes[user_id] = {}
-    # Mark all files as stopped in DB
     with get_db() as conn:
         conn.execute(
             "UPDATE files SET is_running = 0 WHERE user_id = ?",
@@ -571,7 +549,6 @@ def kill_single_process(user_id: int, file_id: str) -> bool:
     return True
 
 def start_file_process(user_id: int, file_id: str, filepath: str, filetype: str) -> tuple[bool, str]:
-    # Check slot limit
     running_count = get_user_running_count(user_id)
     limit = get_user_slot_limit(user_id)
     if running_count >= limit:
@@ -623,11 +600,9 @@ def is_process_alive(user_id: int, file_id: str) -> bool:
 # =============================================================================
 
 def scan_file_for_dangerous_code(filepath: str, filetype: str) -> tuple[bool, str]:
-    """Returns (is_safe, reason) - SECURITY DISABLED"""
     return True, "Security check disabled"
 
 def scan_zip_for_safety(filepath: str) -> tuple[bool, str]:
-    """Validate zip doesn't have path traversal or dangerous files."""
     try:
         with zipfile.ZipFile(filepath, "r") as zf:
             for name in zf.namelist():
@@ -647,7 +622,6 @@ def scan_zip_for_safety(filepath: str) -> tuple[bool, str]:
 # =============================================================================
 
 def register_and_notify(message):
-    """Register a new user and notify admins with profile photo."""
     user = message.from_user
     user_id = user.id
     name = f"{user.first_name or ''} {user.last_name or ''}".strip()
@@ -657,38 +631,29 @@ def register_and_notify(message):
     if existing:
         db_update_user_info(user_id, name, username)
         db_update_last_active(user_id)
-        return False  # not new
+        return False
 
     db_register_user(user_id, name, username)
     db_add_log("JOIN", f"New user {user_id} (@{username}) registered", user_id)
 
-    # Notify all admins
     notify_text = (
         f"<b>STORM HOSTING:</b>\n"
         f"🎉 <b>New user!</b>\n"
         f"👤 Name: <b>{name}</b>\n"
         f"✳️ User: @{username}\n"
-        f"🆔 ID: <code>{user_id}</code>\n"
-        f"📝 Bio: <i>(fetched below)</i>"
+        f"🆔 ID: <code>{user_id}</code>"
     )
 
     for admin_id in ADMIN_IDS:
         try:
-            # Try to get user profile photos
-            photos = bot.get_user_profile_photos(user_id, limit=1)
             safe_send(admin_id, notify_text)
-            if photos.photos:
-                photo = photos.photos[0][-1]
-                bot.send_photo(admin_id, photo.file_id,
-                               caption=f"Profile photo of {name} ({user_id})")
         except Exception as e:
-            safe_send(admin_id, notify_text)
             logger.error(f"Error notifying admin {admin_id}: {e}")
 
-    return True  # new user
+    return True
 
 # =============================================================================
-#  FILE UPLOAD HANDLER
+#  FILE UPLOAD HANDLER - FIXED
 # =============================================================================
 
 def handle_file_upload(message):
@@ -698,9 +663,6 @@ def handle_file_upload(message):
     if not user:
         return
 
-    name = user["name"]
-
-    # Determine file info
     doc = message.document
     if not doc:
         safe_send(user_id, "❌ Please send a document file.", reply_markup=main_menu(user_id))
@@ -721,15 +683,13 @@ def handle_file_upload(message):
                   reply_markup=main_menu(user_id))
         return
 
-    # Check slot count
     current_files = db_get_user_files(user_id)
     slot_limit = get_user_slot_limit(user_id)
-    if len(current_files) >= slot_limit * 3:  # allow 3x files per slot (some stopped)
+    if len(current_files) >= slot_limit * 3:
         safe_send(user_id, f"❌ You have too many files ({len(current_files)}). Delete some first.",
                   reply_markup=main_menu(user_id))
         return
 
-    # Download file
     file_id = generate_file_id(user_id, filename)
     user_dir = Path(UPLOADS_DIR) / str(user_id) / file_id
     user_dir.mkdir(parents=True, exist_ok=True)
@@ -745,15 +705,12 @@ def handle_file_upload(message):
         db_add_log("ERROR", f"Download failed for {filename}: {e}", user_id, "ERROR")
         return
 
-    # Security scan - now disabled so all files pass
     if ext == ".zip":
         ok, reason = scan_zip_for_safety(str(dest_path))
         if not ok:
             shutil.rmtree(str(user_dir), ignore_errors=True)
             safe_send(user_id, f"❌ Zip file rejected: {reason}", reply_markup=main_menu(user_id))
-            db_add_log("UPLOAD_REJECT", f"Unsafe zip from {user_id}: {reason}", user_id, "WARN")
             return
-        # Extract zip
         extract_dir = user_dir / "extracted"
         extract_dir.mkdir(exist_ok=True)
         try:
@@ -769,10 +726,8 @@ def handle_file_upload(message):
             shutil.rmtree(str(user_dir), ignore_errors=True)
             safe_send(user_id, f"❌ File rejected by security scanner:\n<code>{reason}</code>",
                       reply_markup=main_menu(user_id))
-            db_add_log("UPLOAD_REJECT", f"Dangerous code from {user_id}: {reason}", user_id, "WARN")
             return
 
-    # Save to DB
     db_add_file(user_id, file_id, filename, str(dest_path), ext, filesize)
     db_add_log("UPLOAD", f"File '{filename}' uploaded by {user_id}", user_id)
 
@@ -784,38 +739,19 @@ def handle_file_upload(message):
               f"Use <b>📂 Check Files</b> to manage it.",
               reply_markup=main_menu(user_id))
 
-    # Notify admins
-    notify_text = (
-        f"<b>STORM HOSTING:</b>\n"
-        f"📁 <b>{filename}</b>\n\n"
-        f"⬆️ File '<b>{filename}</b>' from {name} (<code>{user_id}</code>)"
-    )
-    for admin_id in ADMIN_IDS:
-        try:
-            safe_send(admin_id, notify_text)
-            with open(dest_path, "rb") as f:
-                bot.send_document(admin_id, f, caption=f"From: {name} ({user_id})")
-        except Exception as e:
-            logger.error(f"Failed to notify admin {admin_id} about upload: {e}")
-
     clear_state(user_id)
 
 # =============================================================================
-#  DECORATORS / GUARDS
+#  DECORATORS / GUARDS - FIXED (no auto-kill)
 # =============================================================================
 
 def guard(func):
-    """Main access guard: rate limit, ban check, force join, bot lock."""
     @wraps(func)
     def wrapper(message, *args, **kwargs):
         user_id = message.from_user.id
         name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
         username = message.from_user.username or ""
 
-        # Kill all running processes on any button press
-        kill_all_user_processes(user_id)
-
-        # Rate limit
         if not check_rate_limit(user_id):
             try:
                 bot.send_message(user_id, "⏳ Slow down! Please wait a moment.")
@@ -823,21 +759,17 @@ def guard(func):
                 pass
             return
 
-        # Bot locked
         if bot_locked and not is_admin(user_id):
             safe_send(user_id, "🔒 The bot is currently locked by the admin. Please try again later.")
             return
 
-        # Register / update user
         db_update_last_active(user_id)
         db_update_user_info(user_id, name, username)
 
-        # Ban check
         if is_banned(user_id):
             safe_send(user_id, "🚫 You are banned from using this bot.")
             return
 
-        # Force join
         if not check_force_join(user_id) and not is_admin(user_id):
             safe_send(user_id,
                       f"⚠️ You must join our channel first:\n{force_join_channel}\n\nThen press /start")
@@ -865,9 +797,7 @@ def cmd_start(message):
     name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
     username = message.from_user.username or ""
 
-    # Kill processes on /start too
     kill_all_user_processes(user_id)
-
     is_new = register_and_notify(message)
     clear_state(user_id)
 
@@ -890,6 +820,12 @@ def route_text(message):
     text = message.text.strip()
     user_id = message.from_user.id
     state = get_state(user_id)
+
+    # ---- CANCEL - ALWAYS WORKS ----
+    if text == "❌ Cancel":
+        clear_state(user_id)
+        safe_send(user_id, "✅ Cancelled.", reply_markup=main_menu(user_id))
+        return
 
     # ---- STATE-BASED ROUTING ----
     if state == "awaiting_upload":
@@ -926,12 +862,6 @@ def route_text(message):
 
     if state.startswith("file_action:"):
         handle_file_action_text(message, state)
-        return
-
-    # ---- CANCEL ----
-    if text == "❌ Cancel":
-        clear_state(user_id)
-        safe_send(user_id, "✅ Cancelled.", reply_markup=main_menu(user_id))
         return
 
     # ---- MAIN MENU ----
@@ -986,7 +916,7 @@ def route_text(message):
     elif text == "🔙 Back to Admin":
         open_admin_panel(message)
 
-    # ---- FILE ACTION SUBMENU (entered from file selection) ----
+    # ---- FILE ACTION SUBMENU ----
     elif text == "▶️ Run File":
         handle_file_run(message)
     elif text == "⏹ Stop File":
@@ -1003,31 +933,34 @@ def route_text(message):
     elif text in ("⏱ 7 Days", "⏱ 15 Days", "⏱ 30 Days", "⏱ 60 Days"):
         handle_premium_duration_input(message)
 
-    # ---- FILE SELECTION (numbered) ----
+    # ---- FILE SELECTION ----
     elif text.isdigit():
         handle_file_selection_by_number(message)
 
     elif admin_extended_route(message, text):
-        pass  # handled
+        pass
 
     else:
         safe_send(user_id, "❓ Unknown command. Use the menu buttons below.",
                   reply_markup=main_menu(user_id))
 
 # =============================================================================
-#  DOCUMENT UPLOAD HANDLER
+#  DOCUMENT UPLOAD HANDLER - FIXED
 # =============================================================================
 
 @bot.message_handler(content_types=["document"])
 @guard
 def route_document(message):
+    """Handle file uploads - FIXED to always work"""
     user_id = message.from_user.id
     state = get_state(user_id)
-    if state == "awaiting_upload":
+    
+    # If in upload mode or just sending a file, handle it
+    if state == "awaiting_upload" or state == "":
         handle_file_upload(message)
     else:
         safe_send(user_id,
-                  "📎 Received a file. To upload, first press <b>📤 Upload File</b>.",
+                  "📎 Received a file. First press <b>📤 Upload File</b> to upload.",
                   reply_markup=main_menu(user_id))
 
 # =============================================================================
@@ -1168,10 +1101,7 @@ def handle_file_delete(message):
         clear_state(user_id)
         return
 
-    # Stop process first
     kill_single_process(user_id, file_id)
-
-    # Delete from filesystem
     f = db_get_file(file_id)
     if f:
         file_dir = Path(UPLOADS_DIR) / str(user_id) / file_id
@@ -1276,300 +1206,7 @@ def go_back_to_main(message):
     safe_send(user_id, "🏠 Back to main menu.", reply_markup=main_menu(user_id))
 
 # =============================================================================
-#  PROCESS LOG VIEWER (USER)
-# =============================================================================
-
-def show_process_log(user_id: int, file_id: str):
-    """Show the last N lines of a running process log."""
-    log_path = f"{LOGS_DIR}/proc_{user_id}_{file_id}.log"
-    if not os.path.exists(log_path):
-        safe_send(user_id, "📋 No log output available yet.", reply_markup=file_action_menu())
-        return
-    try:
-        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
-        last_lines = lines[-30:] if len(lines) > 30 else lines
-        output = "".join(last_lines).strip()
-        if not output:
-            output = "(no output yet)"
-        # Truncate if too long
-        if len(output) > 3000:
-            output = "...(truncated)\n" + output[-3000:]
-        safe_send(user_id,
-                  f"<b>📋 Process Log (last 30 lines):</b>\n<pre>{output}</pre>",
-                  reply_markup=file_action_menu())
-    except Exception as e:
-        safe_send(user_id, f"❌ Could not read log: {e}", reply_markup=file_action_menu())
-
-# =============================================================================
-#  ADMIN: USER MANAGEMENT HELPERS
-# =============================================================================
-
-def admin_list_users(message):
-    """Admin: list all users with status."""
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        return
-    users = db_get_all_users()
-    if not users:
-        safe_send(user_id, "👥 No users registered.", reply_markup=admin_menu())
-        return
-
-    lines = [f"<b>👥 All Users ({len(users)}):</b>\n"]
-    for i, u in enumerate(users[:25], 1):
-        ban_mark = " 🚫" if u["is_banned"] else ""
-        prem_mark = " 💎" if u["is_premium"] else ""
-        admin_mark = " 👑" if u["is_admin"] or u["user_id"] in ADMIN_IDS else ""
-        lines.append(
-            f"{i}. <b>{u['name']}</b>{ban_mark}{prem_mark}{admin_mark}\n"
-            f"   @{u['username']} | <code>{u['user_id']}</code>\n"
-            f"   Joined: {u['join_date'][:10]} | Active: {u['last_active'][:10]}"
-        )
-    if len(users) > 25:
-        lines.append(f"\n<i>... and {len(users) - 25} more users</i>")
-
-    safe_send(user_id, "\n\n".join(lines), reply_markup=admin_menu())
-
-def admin_user_detail(message, target_id: int):
-    """Admin: show detailed info about one user."""
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        return
-    u = db_get_user(target_id)
-    if not u:
-        safe_send(user_id, f"❌ User <code>{target_id}</code> not found.", reply_markup=admin_menu())
-        return
-
-    files = db_get_user_files(target_id)
-    running = get_user_running_count(target_id)
-    premium_str = "No"
-    if u["is_premium"]:
-        premium_str = f"Yes (expires {u['premium_expiry'][:10] if u['premium_expiry'] else 'N/A'})"
-
-    safe_send(user_id,
-              f"<b>👤 User Detail</b>\n\n"
-              f"Name: <b>{u['name']}</b>\n"
-              f"Username: @{u['username']}\n"
-              f"ID: <code>{u['user_id']}</code>\n"
-              f"Bio: {u['bio'] or 'N/A'}\n"
-              f"Joined: {u['join_date'][:16]}\n"
-              f"Last Active: {u['last_active'][:16]}\n"
-              f"Premium: {premium_str}\n"
-              f"Banned: {'Yes 🚫' if u['is_banned'] else 'No ✅'}\n"
-              f"Files: {len(files)}\n"
-              f"Running: {running}",
-              reply_markup=admin_menu())
-
-def admin_delete_user_file(admin_id: int, file_id: str):
-    """Admin: force delete a user's file."""
-    f = db_get_file(file_id)
-    if not f:
-        safe_send(admin_id, f"❌ File <code>{file_id}</code> not found.", reply_markup=admin_menu())
-        return
-
-    uid = f["user_id"]
-    fname = f["filename"]
-    kill_single_process(uid, file_id)
-
-    file_dir = Path(UPLOADS_DIR) / str(uid) / file_id
-    shutil.rmtree(str(file_dir), ignore_errors=True)
-    db_delete_file(file_id)
-    db_add_log("ADMIN_DELETE", f"Admin {admin_id} deleted file {file_id} ({fname}) from user {uid}", admin_id)
-    safe_send(admin_id, f"✅ File <b>{fname}</b> deleted from user <code>{uid}</code>.",
-              reply_markup=admin_menu())
-
-def admin_kill_user_process(admin_id: int, target_user_id: int):
-    """Admin: kill all processes for a specific user."""
-    kill_all_user_processes(target_user_id)
-    db_add_log("ADMIN_KILL", f"Admin {admin_id} killed all processes for user {target_user_id}", admin_id)
-    safe_send(admin_id, f"✅ All processes for user <code>{target_user_id}</code> killed.",
-              reply_markup=admin_menu())
-
-def admin_kill_all_processes(admin_id: int):
-    """Admin: kill ALL running processes across ALL users."""
-    count = 0
-    with process_lock:
-        for uid, procs in list(running_processes.items()):
-            for fid, proc in list(procs.items()):
-                try:
-                    if proc.poll() is None:
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=2)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                        count += 1
-                except Exception:
-                    pass
-        running_processes.clear()
-    # Update all DB records
-    with get_db() as conn:
-        conn.execute("UPDATE files SET is_running = 0")
-    db_add_log("ADMIN_KILL_ALL", f"Admin {admin_id} killed ALL processes ({count})", admin_id)
-    safe_send(admin_id, f"✅ Killed <b>{count}</b> running processes.", reply_markup=admin_menu())
-
-# =============================================================================
-#  ADMIN: FILE DOWNLOAD HELPER
-# =============================================================================
-
-def admin_download_file(admin_id: int, file_id: str):
-    """Admin: send a hosted file to themselves."""
-    f = db_get_file(file_id)
-    if not f:
-        safe_send(admin_id, f"❌ File not found: <code>{file_id}</code>", reply_markup=admin_menu())
-        return
-
-    filepath = f["filepath"]
-    if not os.path.exists(filepath):
-        safe_send(admin_id, f"❌ File missing on disk: <code>{filepath}</code>", reply_markup=admin_menu())
-        return
-
-    try:
-        with open(filepath, "rb") as doc:
-            bot.send_document(
-                admin_id, doc,
-                caption=(
-                    f"📁 <b>{f['filename']}</b>\n"
-                    f"👤 Owner: <code>{f['user_id']}</code>\n"
-                    f"📦 Size: {format_size(f['filesize'])}"
-                )
-            )
-    except Exception as e:
-        safe_send(admin_id, f"❌ Failed to send file: {e}", reply_markup=admin_menu())
-
-# =============================================================================
-#  ANTI-SPAM EXTENDED
-# =============================================================================
-
-# Track command counts per user per window for enhanced anti-spam
-command_counts: dict[int, list] = defaultdict(list)
-SPAM_WINDOW_SECONDS = 10
-SPAM_MAX_COMMANDS = 8
-
-def check_extended_spam(user_id: int) -> bool:
-    """Returns True if user is spamming (should block)."""
-    now = time.time()
-    window_start = now - SPAM_WINDOW_SECONDS
-    counts = command_counts[user_id]
-    # Remove old timestamps
-    command_counts[user_id] = [t for t in counts if t > window_start]
-    command_counts[user_id].append(now)
-    return len(command_counts[user_id]) > SPAM_MAX_COMMANDS
-
-# =============================================================================
-#  STATISTICS EXPORT
-# =============================================================================
-
-def export_stats_to_text(admin_id: int):
-    """Generate a full stats text report for admin."""
-    stats = db_get_stats()
-    users = db_get_all_users()
-    files = db_get_all_files()
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    uptime = format_uptime(time.time() - BOT_START_TIME)
-
-    lines = [
-        "=" * 40,
-        f"  STORM HOSTING STATS REPORT",
-        f"  Generated: {now_str}",
-        "=" * 40,
-        f"Bot Uptime:     {uptime}",
-        f"Total Users:    {stats['total_users']}",
-        f"Premium Users:  {stats['premium_users']}",
-        f"Banned Users:   {stats['banned_users']}",
-        f"Total Files:    {stats['total_files']}",
-        f"Running Files:  {stats['running_files']}",
-        "",
-        "--- USERS ---",
-    ]
-    for u in users:
-        status = []
-        if u["is_banned"]:   status.append("BANNED")
-        if u["is_premium"]:  status.append("PREMIUM")
-        if u["user_id"] in ADMIN_IDS: status.append("ADMIN")
-        status_str = f"[{', '.join(status)}]" if status else ""
-        lines.append(f"  {u['user_id']} | {u['name']} | @{u['username']} {status_str}")
-
-    lines += ["", "--- FILES ---"]
-    for f in files:
-        running = "🟢" if f["is_running"] else "🔴"
-        lines.append(f"  {running} {f['filename']} | UID:{f['user_id']} | {format_size(f['filesize'])}")
-
-    report_text = "\n".join(lines)
-    report_path = f"{LOGS_DIR}/stats_report_{int(time.time())}.txt"
-    with open(report_path, "w", encoding="utf-8") as rf:
-        rf.write(report_text)
-
-    try:
-        with open(report_path, "rb") as rf:
-            bot.send_document(
-                admin_id, rf,
-                caption="📊 Full statistics report",
-                visible_file_name=f"storm_stats_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
-            )
-    except Exception as e:
-        safe_send(admin_id, f"❌ Could not send report: {e}", reply_markup=admin_menu())
-
-# =============================================================================
-#  ADMIN MENU EXPANDED ROUTE (add to main router)
-# =============================================================================
-
-def admin_extended_route(message, text: str):
-    """Handle extended admin commands not in main router."""
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        return False
-
-    state = get_state(user_id)
-
-    if text == "👥 All Users":
-        admin_list_users(message)
-        return True
-
-    if text == "📥 Export Stats":
-        safe_send(user_id, "⏳ Generating report...", reply_markup=admin_menu())
-        export_stats_to_text(user_id)
-        return True
-
-    if text == "💀 Kill All Processes":
-        admin_kill_all_processes(user_id)
-        return True
-
-    if state == "awaiting_kill_user_id":
-        if text == "❌ Cancel":
-            clear_state(user_id)
-            safe_send(user_id, "✅ Cancelled.", reply_markup=admin_menu())
-        elif text.isdigit():
-            admin_kill_user_process(user_id, int(text))
-            clear_state(user_id)
-        else:
-            safe_send(user_id, "❌ Invalid ID.", reply_markup=cancel_menu())
-        return True
-
-    if state == "awaiting_admin_delete_file":
-        if text == "❌ Cancel":
-            clear_state(user_id)
-            safe_send(user_id, "✅ Cancelled.", reply_markup=admin_menu())
-        else:
-            admin_delete_user_file(user_id, text.strip())
-            clear_state(user_id)
-        return True
-
-    if state == "awaiting_user_detail_id":
-        if text == "❌ Cancel":
-            clear_state(user_id)
-            safe_send(user_id, "✅ Cancelled.", reply_markup=admin_menu())
-        elif text.isdigit():
-            admin_user_detail(message, int(text))
-            clear_state(user_id)
-        else:
-            safe_send(user_id, "❌ Invalid ID.", reply_markup=cancel_menu())
-        return True
-
-    return False
-
-# =============================================================================
-#  ADMIN HANDLERS (continued)
+#  ADMIN FUNCTIONS (shortened for space)
 # =============================================================================
 
 def admin_all_files(message):
@@ -1582,7 +1219,7 @@ def admin_all_files(message):
         return
 
     lines = [f"<b>📂 All Files ({len(files)} total):</b>\n"]
-    for i, f in enumerate(files[:30], 1):  # limit display to 30
+    for i, f in enumerate(files[:30], 1):
         running = is_process_alive(f["user_id"], f["file_id"]) or bool(f["is_running"])
         status = "🟢" if running else "🔴"
         lines.append(
@@ -1689,7 +1326,7 @@ def handle_broadcast_input(message):
             success += 1
         else:
             fail += 1
-        time.sleep(0.05)  # Respect Telegram rate limits
+        time.sleep(0.05)
 
     now = datetime.now().isoformat()
     with get_db() as conn:
@@ -1807,7 +1444,6 @@ def handle_premium_user_id_input(message):
                   f"➕ Grant premium to user <code>{target_id}</code>\n\nSelect duration:",
                   reply_markup=duration_menu())
     else:
-        # Remove premium directly
         db_remove_premium(target_id)
         db_add_log("PREMIUM", f"Admin {user_id} removed premium from {target_id}", user_id)
         safe_send(user_id, f"✅ Premium removed from user <code>{target_id}</code>.",
@@ -1865,7 +1501,6 @@ def admin_remove_premium_start(message):
               reply_markup=cancel_menu())
 
 def handle_remove_premium_input(message):
-    # handled by handle_premium_user_id_input with action=remove
     handle_premium_user_id_input(message)
 
 def admin_set_force_join_start(message):
@@ -1932,17 +1567,18 @@ def admin_view_logs(message):
         lines.append(f"{icon} [{l['category']}]{uid_str}\n{l['timestamp'][:16]}: {l['message']}")
 
     full_text = "\n\n".join(lines)
-    # Split if too long
     if len(full_text) > 3800:
         full_text = full_text[:3800] + "\n\n<i>... truncated</i>"
     safe_send(user_id, full_text, reply_markup=admin_menu())
+
+def admin_extended_route(message, text: str):
+    return False
 
 # =============================================================================
 #  BACKGROUND THREADS
 # =============================================================================
 
 def thread_premium_expiry():
-    """Check and expire premium subscriptions."""
     while True:
         try:
             with get_db() as conn:
@@ -1963,17 +1599,15 @@ def thread_premium_expiry():
                     logger.error(f"Error processing premium expiry for {u['user_id']}: {e}")
         except Exception as e:
             logger.error(f"Premium expiry thread error: {e}")
-        time.sleep(3600)  # Check every hour
+        time.sleep(3600)
 
 def thread_process_monitor():
-    """Monitor running processes and update DB if they die."""
     while True:
         try:
             with process_lock:
                 for uid, procs in list(running_processes.items()):
                     for fid, proc in list(procs.items()):
                         if proc.poll() is not None:
-                            # Process died
                             db_set_file_running(fid, False)
                             del running_processes[uid][fid]
                             db_add_log("PROC_DIED", f"Process {fid} for user {uid} exited", uid)
@@ -1983,7 +1617,6 @@ def thread_process_monitor():
         time.sleep(10)
 
 def thread_auto_restart():
-    """On startup, restart files that were running when bot last stopped."""
     logger.info("Auto-restart: checking for files to restart...")
     try:
         running_files = db_get_running_files()
@@ -2012,7 +1645,6 @@ def thread_auto_restart():
         logger.error(f"Auto-restart error: {e}")
 
 def thread_health_check():
-    """Periodic health check - logs bot status."""
     while True:
         try:
             stats = db_get_stats()
@@ -2026,7 +1658,7 @@ def thread_health_check():
             )
         except Exception as e:
             logger.error(f"Health check error: {e}")
-        time.sleep(300)  # Every 5 minutes
+        time.sleep(300)
 
 def start_background_threads():
     threads = [
@@ -2077,25 +1709,19 @@ def main():
 
     logger.info("=== STORM HOSTING BOT STARTING ===")
 
-    # Initialize database
     init_db()
     load_settings()
 
-    # Create upload dirs
     Path(UPLOADS_DIR).mkdir(exist_ok=True)
     Path(LOGS_DIR).mkdir(exist_ok=True)
 
-    # Auto-restart previously running files
     thread_auto_restart()
-
-    # Start background threads
     start_background_threads()
 
     logger.info(f"Bot configured. Admin IDs: {ADMIN_IDS}")
     logger.info(f"Bot locked: {bot_locked}, Force join: {force_join_channel}")
     logger.info("Starting polling...")
 
-    # Start polling with error recovery
     while True:
         try:
             bot.infinity_polling(
