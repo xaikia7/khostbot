@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # =============================================================================
-#  PARTH HOSTING BOT — Full Production SaaS System
-#  Fixed: Upload flow, Cancel button, Security disabled
+#  STORM HOSTING BOT — FULLY FIXED
+#  Fixed: Upload flow, Cancel button, Security disabled, Document handler
 # =============================================================================
 
 import os
@@ -653,7 +653,7 @@ def register_and_notify(message):
     return True
 
 # =============================================================================
-#  FILE UPLOAD HANDLER - FIXED
+#  FILE UPLOAD HANDLER
 # =============================================================================
 
 def handle_file_upload(message):
@@ -742,7 +742,7 @@ def handle_file_upload(message):
     clear_state(user_id)
 
 # =============================================================================
-#  DECORATORS / GUARDS - FIXED (no auto-kill)
+#  DECORATORS / GUARDS
 # =============================================================================
 
 def guard(func):
@@ -945,23 +945,15 @@ def route_text(message):
                   reply_markup=main_menu(user_id))
 
 # =============================================================================
-#  DOCUMENT UPLOAD HANDLER - FIXED
+#  DOCUMENT UPLOAD HANDLER - FULLY FIXED
 # =============================================================================
 
 @bot.message_handler(content_types=["document"])
 @guard
 def route_document(message):
-    """Handle file uploads - FIXED to always work"""
-    user_id = message.from_user.id
-    state = get_state(user_id)
-    
-    # If in upload mode or just sending a file, handle it
-    if state == "awaiting_upload" or state == "":
-        handle_file_upload(message)
-    else:
-        safe_send(user_id,
-                  "📎 Received a file. First press <b>📤 Upload File</b> to upload.",
-                  reply_markup=main_menu(user_id))
+    """Handle file uploads - ALWAYS WORKS"""
+    # Always handle file upload regardless of state
+    handle_file_upload(message)
 
 # =============================================================================
 #  MAIN MENU HANDLERS
@@ -1206,7 +1198,7 @@ def go_back_to_main(message):
     safe_send(user_id, "🏠 Back to main menu.", reply_markup=main_menu(user_id))
 
 # =============================================================================
-#  ADMIN FUNCTIONS (shortened for space)
+#  ADMIN FUNCTIONS
 # =============================================================================
 
 def admin_all_files(message):
