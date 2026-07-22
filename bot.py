@@ -500,14 +500,12 @@ def attempt_install_npm(module_name, user_folder, message):
         return False
 
 def run_script(script_path, script_owner_id, user_folder, file_name, message_obj_for_reply, attempt=1):
-    max_attempts = 5  # Infinite retries
+    max_attempts = 5
     if attempt > max_attempts:
-        # Don't give up, just keep trying
         attempt = 1
     
     script_key = f"{script_owner_id}_{file_name}"
     
-    # Check if already running
     if is_bot_running(script_owner_id, file_name):
         logger.info(f"✅ {file_name} already running")
         return
@@ -517,7 +515,6 @@ def run_script(script_path, script_owner_id, user_folder, file_name, message_obj
             bot.reply_to(message_obj_for_reply, f"❌ Script '{file_name}' not found!")
             return
         
-        # Check for missing modules
         if attempt == 1:
             check_proc = None
             try:
@@ -547,7 +544,6 @@ def run_script(script_path, script_owner_id, user_folder, file_name, message_obj
                     check_proc.kill()
                     check_proc.communicate()
 
-        # Start the script
         log_file_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
         log_file = None
         process = None
@@ -585,33 +581,25 @@ def run_script(script_path, script_owner_id, user_folder, file_name, message_obj
             
             bot.reply_to(message_obj_for_reply, f"✅ Script '{file_name}' started! (PID: {process.pid})")
             
-            # =============================================================
-            # 🔥 AUTO-RESTART THREAD - KEEPS SCRIPT RUNNING FOREVER 🔥
-            # =============================================================
+            # Auto-restart thread
             def auto_restart_loop():
                 while True:
-                    time.sleep(10)  # Check every 10 seconds
-                    
-                    # Check if script is still running
+                    time.sleep(10)
                     if not is_bot_running(script_owner_id, file_name):
                         logger.info(f"🔄 Auto-restarting {file_name}...")
                         try:
-                            # Notify user
                             bot.send_message(script_owner_id,
                                 f"🔄 Script `{file_name}` stopped. Auto-restarting...",
                                 parse_mode='Markdown')
-                            
-                            # Restart the script
                             threading.Thread(
                                 target=run_script,
                                 args=(script_path, script_owner_id, user_folder, file_name, message_obj_for_reply, 1)
                             ).start()
-                            break  # Exit this thread, new thread will handle monitoring
+                            break
                         except Exception as e:
                             logger.error(f"Auto-restart error for {file_name}: {e}")
                             time.sleep(30)
             
-            # Start the auto-restart thread
             monitor_thread = threading.Thread(target=auto_restart_loop, daemon=True)
             monitor_thread.start()
             logger.info(f"✅ Auto-restart monitor started for {file_name}")
@@ -628,31 +616,122 @@ def run_script(script_path, script_owner_id, user_folder, file_name, message_obj
         if script_key in bot_scripts:
             kill_process_tree(bot_scripts[script_key])
             del bot_scripts[script_key]
-            
+
 def run_js_script(script_path, script_owner_id, user_folder, file_name, message_obj_for_reply, attempt=1):
-    # ... existing code ...
+    max_attempts = 5
+    if attempt > max_attempts:
+        attempt = 1
     
-    # After starting the process, add this:
-    def auto_restart_loop():
-        while True:
-            time.sleep(10)
-            if not is_bot_running(script_owner_id, file_name):
-                logger.info(f"🔄 Auto-restarting JS {file_name}...")
-                try:
-                    bot.send_message(script_owner_id,
-                        f"🔄 JS Script `{file_name}` stopped. Auto-restarting...",
-                        parse_mode='Markdown')
-                    threading.Thread(
-                        target=run_js_script,
-                        args=(script_path, script_owner_id, user_folder, file_name, message_obj_for_reply, 1)
-                    ).start()
-                    break
-                except Exception as e:
-                    logger.error(f"Auto-restart error for JS {file_name}: {e}")
-                    time.sleep(30)
+    script_key = f"{script_owner_id}_{file_name}"
     
-    monitor_thread = threading.Thread(target=auto_restart_loop, daemon=True)
-    monitor_thread.start()
+    if is_bot_running(script_owner_id, file_name):
+        return
+    
+    try:
+        if not os.path.exists(script_path):
+            bot.reply_to(message_obj_for_reply, f"❌ JS Script '{file_name}' not found!")
+            return
+        
+        if attempt == 1:
+            check_proc = None
+            try:
+                check_proc = subprocess.Popen(
+                    ['node', script_path], cwd=user_folder,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding='utf-8', errors='ignore'
+                )
+                stdout, stderr = check_proc.communicate(timeout=5)
+                if check_proc.returncode != 0 and stderr:
+                    match_js = re.search(r"Cannot find module '(.+?)'", stderr)
+                    if match_js:
+                        module_name = match_js.group(1).strip().strip("'\"")
+                        if not module_name.startswith('.') and not module_name.startswith('/'):
+                            if attempt_install_npm(module_name, user_folder, message_obj_for_reply):
+                                bot.reply_to(message_obj_for_reply, f"🔄 NPM Install OK. Retrying '{file_name}'...")
+                                time.sleep(2)
+                                threading.Thread(target=run_js_script, args=(script_path, script_owner_id, user_folder, file_name, message_obj_for_reply, attempt + 1)).start()
+                                return
+            except subprocess.TimeoutExpired:
+                if check_proc and check_proc.poll() is None:
+                    check_proc.kill()
+                    check_proc.communicate()
+            except Exception as e:
+                logger.error(f"JS pre-check error: {e}")
+            finally:
+                if check_proc and check_proc.poll() is None:
+                    check_proc.kill()
+                    check_proc.communicate()
+
+        log_file_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
+        log_file = None
+        process = None
+        
+        try:
+            log_file = open(log_file_path, 'w', encoding='utf-8', errors='ignore')
+        except Exception as e:
+            bot.reply_to(message_obj_for_reply, f"❌ Failed to open log file: {e}")
+            return
+        
+        try:
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+            process = subprocess.Popen(
+                ['node', script_path], cwd=user_folder,
+                stdout=log_file, stderr=log_file,
+                stdin=subprocess.PIPE, startupinfo=startupinfo,
+                encoding='utf-8', errors='ignore'
+            )
+            
+            bot_scripts[script_key] = {
+                'process': process,
+                'log_file': log_file,
+                'file_name': file_name,
+                'chat_id': message_obj_for_reply.chat.id,
+                'script_owner_id': script_owner_id,
+                'start_time': datetime.now(),
+                'user_folder': user_folder,
+                'type': 'js',
+                'script_key': script_key
+            }
+            
+            bot.reply_to(message_obj_for_reply, f"✅ JS Script '{file_name}' started! (PID: {process.pid})")
+            
+            def auto_restart_loop():
+                while True:
+                    time.sleep(10)
+                    if not is_bot_running(script_owner_id, file_name):
+                        logger.info(f"🔄 Auto-restarting JS {file_name}...")
+                        try:
+                            bot.send_message(script_owner_id,
+                                f"🔄 JS Script `{file_name}` stopped. Auto-restarting...",
+                                parse_mode='Markdown')
+                            threading.Thread(
+                                target=run_js_script,
+                                args=(script_path, script_owner_id, user_folder, file_name, message_obj_for_reply, 1)
+                            ).start()
+                            break
+                        except Exception as e:
+                            logger.error(f"Auto-restart error for JS {file_name}: {e}")
+                            time.sleep(30)
+            
+            monitor_thread = threading.Thread(target=auto_restart_loop, daemon=True)
+            monitor_thread.start()
+            
+        except Exception as e:
+            if log_file and not log_file.closed:
+                log_file.close()
+            bot.reply_to(message_obj_for_reply, f"❌ Error starting JS '{file_name}': {str(e)}")
+            if script_key in bot_scripts:
+                del bot_scripts[script_key]
+                
+    except Exception as e:
+        logger.error(f"Unexpected error in run_js_script: {e}")
+        if script_key in bot_scripts:
+            kill_process_tree(bot_scripts[script_key])
+            del bot_scripts[script_key]
 
 # --- Menu Creation ---
 def create_main_menu_inline(user_id):
@@ -810,7 +889,6 @@ def handle_zip_file(downloaded_file_content, file_name_zip, message):
             shutil.move(src_path, dest_path)
         save_user_file(user_id, main_script_name, file_type)
         
-        # AUTO-RUN - No approval needed
         file_path = os.path.join(user_folder, main_script_name)
         if os.path.exists(file_path):
             if file_type == 'py':
@@ -838,12 +916,9 @@ def handle_zip_file(downloaded_file_content, file_name_zip, message):
 def handle_js_file(file_path, script_owner_id, user_folder, file_name, message):
     try:
         save_user_file(script_owner_id, file_name, 'js')
-        
-        # AUTO-RUN - No approval needed
         if os.path.exists(file_path):
             threading.Thread(target=run_js_script,
                            args=(file_path, script_owner_id, user_folder, file_name, message)).start()
-        
         bot.reply_to(message,
             f"✅ *JS script `{file_name}` uploaded aur start ho gayi!*\n\n"
             f"🟢 Status: Running\n"
@@ -856,12 +931,9 @@ def handle_js_file(file_path, script_owner_id, user_folder, file_name, message):
 def handle_py_file(file_path, script_owner_id, user_folder, file_name, message):
     try:
         save_user_file(script_owner_id, file_name, 'py')
-        
-        # AUTO-RUN - No approval needed
         if os.path.exists(file_path):
             threading.Thread(target=run_script,
                            args=(file_path, script_owner_id, user_folder, file_name, message)).start()
-        
         bot.reply_to(message,
             f"✅ *Python script `{file_name}` uploaded aur start ho gayi!*\n\n"
             f"🟢 Status: Running\n"
@@ -1079,7 +1151,7 @@ def _logic_run_all_scripts(message_or_call):
         reply_func("⚠️ Admin permissions required.")
         return
     reply_func("⏳ Starting all user scripts...")
-    started_count = 0; skipped_files = 0; error_details = []
+    started_count = 0; skipped_files = 0
     all_user_files_snapshot = dict(user_files)
     for target_user_id, files_for_user in all_user_files_snapshot.items():
         if not files_for_user: continue
@@ -1096,10 +1168,8 @@ def _logic_run_all_scripts(message_or_call):
                         started_count += 1
                         time.sleep(0.7)
                     except Exception as e:
-                        error_details.append(f"`{file_name}` (User {target_user_id}) - Error")
                         skipped_files += 1
                 else:
-                    error_details.append(f"`{file_name}` (User {target_user_id}) - Not found")
                     skipped_files += 1
     summary_msg = (f"✅ Run All Scripts Complete:\n\n"
                    f"▶️ Started: {started_count} scripts.\n")
@@ -1324,7 +1394,6 @@ def handle_callbacks(call):
             manual_install_init_callback(call)
         elif data.startswith('finstall_'):
             force_install_pip_callback(call)
-        # Admin callbacks
         elif data == 'subscription':
             admin_required_callback(call, subscription_management_callback)
         elif data == 'stats':
@@ -1441,282 +1510,286 @@ def check_files_callback(call):
 
 def file_control_callback(call):
     try:
-        _, script_owner_id_str, file_name = call.data.split('_', 2)
-        script_owner_id = int(script_owner_id_str)
+        data_parts = call.data.split('_', 2)
+        if len(data_parts) < 3:
+            bot.answer_callback_query(call.id, "⚠️ Invalid file action.", show_alert=True)
+            return
+            
+        action = data_parts[0]
+        script_owner_id = int(data_parts[1])
+        file_name = data_parts[2]
+        
         requesting_user_id = call.from_user.id
+        chat_id = call.message.chat.id
+        message_id = call.message.message_id
+        
+        logger.info(f"📁 File action: {action} | User: {requesting_user_id} | File: {file_name}")
+        
         if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
             bot.answer_callback_query(call.id, "⚠️ You can only manage your own files.", show_alert=True)
             return
+        
         user_files_list = user_files.get(script_owner_id, [])
         if not any(f[0] == file_name for f in user_files_list):
             bot.answer_callback_query(call.id, "⚠️ File not found.", show_alert=True)
             return
+        
         bot.answer_callback_query(call.id)
+        
+        file_info = next((f for f in user_files_list if f[0] == file_name), None)
+        file_type = file_info[1] if file_info else '?'
         is_running = is_bot_running(script_owner_id, file_name)
-        file_type = next((f[1] for f in user_files_list if f[0] == file_name), '?')
+        
+        status_text = '🟢 Running' if is_running else '🔴 Stopped'
+        
+        control_msg = (
+            f"⚙️ *Controls for:* `{file_name}`\n"
+            f"📄 Type: {file_type}\n"
+            f"📊 Status: {status_text}\n"
+            f"🆔 User: `{script_owner_id}`\n\n"
+            f"Choose an action:"
+        )
+        
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        
+        if is_running:
+            markup.row(
+                types.InlineKeyboardButton("🔴 Stop", callback_data=f'stop_{script_owner_id}_{file_name}'),
+                types.InlineKeyboardButton("🔄 Restart", callback_data=f'restart_{script_owner_id}_{file_name}')
+            )
+        else:
+            markup.row(
+                types.InlineKeyboardButton("🟢 Start", callback_data=f'start_{script_owner_id}_{file_name}')
+            )
+        
+        markup.row(
+            types.InlineKeyboardButton("📜 Logs", callback_data=f'logs_{script_owner_id}_{file_name}'),
+            types.InlineKeyboardButton("🗑️ Delete", callback_data=f'delete_{script_owner_id}_{file_name}')
+        )
+        markup.row(
+            types.InlineKeyboardButton("🔙 Back to Files", callback_data='check_files')
+        )
+        
         try:
             bot.edit_message_text(
-                f"⚙️ Controls for: `{file_name}` ({file_type}) of User `{script_owner_id}`\n"
-                f"Status: {'🟢 Running' if is_running else '🔴 Stopped'}",
-                call.message.chat.id, call.message.message_id,
-                reply_markup=create_control_buttons(script_owner_id, file_name, is_running),
+                control_msg,
+                chat_id,
+                message_id,
+                reply_markup=markup,
                 parse_mode='Markdown'
             )
         except telebot.apihelper.ApiTelegramException as e:
-            if "message is not modified" not in str(e): raise
-    except (ValueError, IndexError) as ve:
-        logger.error(f"Error parsing file control callback: {ve}. Data: '{call.data}'")
-        bot.answer_callback_query(call.id, "Error: Invalid action data.", show_alert=True)
+            if "message is not modified" not in str(e):
+                bot.send_message(chat_id, control_msg, reply_markup=markup, parse_mode='Markdown')
+                
     except Exception as e:
-        logger.error(f"Error in file_control_callback: {e}", exc_info=True)
-        bot.answer_callback_query(call.id, "An error occurred.", show_alert=True)
+        logger.error(f"❌ Error in file_control_callback: {e}", exc_info=True)
+        try:
+            bot.answer_callback_query(call.id, f"❌ Error: {str(e)[:100]}", show_alert=True)
+        except:
+            pass
 
 def start_bot_callback(call):
     try:
         _, script_owner_id_str, file_name = call.data.split('_', 2)
         script_owner_id = int(script_owner_id_str)
         requesting_user_id = call.from_user.id
-        chat_id_for_reply = call.message.chat.id
-
+        
         if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
-            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True); return
-
-        if requesting_user_id not in admin_ids and has_any_running_script(script_owner_id):
-            running_scripts = [fn for fn, _ in user_files.get(script_owner_id, []) if is_bot_running(script_owner_id, fn)]
-            bot.answer_callback_query(call.id,
-                f"⚠️ Aapki ek script pehle se chal rahi hai: {', '.join(running_scripts)}\nPehle use stop karo.",
-                show_alert=True)
+            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True)
             return
-
+        
         user_files_list = user_files.get(script_owner_id, [])
         file_info = next((f for f in user_files_list if f[0] == file_name), None)
         if not file_info:
-            bot.answer_callback_query(call.id, "⚠️ File not found.", show_alert=True); return
-
+            bot.answer_callback_query(call.id, "⚠️ File not found.", show_alert=True)
+            return
+        
         file_type = file_info[1]
         user_folder = get_user_folder(script_owner_id)
         file_path = os.path.join(user_folder, file_name)
-
+        
         if not os.path.exists(file_path):
-            bot.answer_callback_query(call.id, f"⚠️ File `{file_name}` missing! Re-upload.", show_alert=True)
-            remove_user_file_db(script_owner_id, file_name); return
-
+            bot.answer_callback_query(call.id, f"⚠️ File `{file_name}` missing!", show_alert=True)
+            return
+        
         if is_bot_running(script_owner_id, file_name):
             bot.answer_callback_query(call.id, f"⚠️ Already running.", show_alert=True)
             return
-
+        
         bot.answer_callback_query(call.id, f"⏳ Starting {file_name}...")
+        
         if file_type == 'py':
             threading.Thread(target=run_script, args=(file_path, script_owner_id, user_folder, file_name, call.message)).start()
         elif file_type == 'js':
             threading.Thread(target=run_js_script, args=(file_path, script_owner_id, user_folder, file_name, call.message)).start()
-        else:
-            bot.send_message(chat_id_for_reply, f"❌ Unknown type '{file_type}'."); return
-
-        time.sleep(1.5)
+        
+        time.sleep(2)
         is_now_running = is_bot_running(script_owner_id, file_name)
         status_text = '🟢 Running' if is_now_running else '🟡 Starting...'
-        try:
-            bot.edit_message_text(
-                f"⚙️ Controls for: `{file_name}` ({file_type})\nStatus: {status_text}",
-                chat_id_for_reply, call.message.message_id,
-                reply_markup=create_control_buttons(script_owner_id, file_name, is_now_running), parse_mode='Markdown'
-            )
-        except telebot.apihelper.ApiTelegramException as e:
-            if "message is not modified" not in str(e): raise
-    except (ValueError, IndexError) as e:
-        bot.answer_callback_query(call.id, "Error: Invalid start command.", show_alert=True)
+        bot.send_message(call.message.chat.id, f"✅ `{file_name}` - {status_text}", parse_mode='Markdown')
+        
     except Exception as e:
-        logger.error(f"Error in start_bot_callback: {e}", exc_info=True)
-        bot.answer_callback_query(call.id, "Error starting script.", show_alert=True)
+        logger.error(f"❌ Error starting bot: {e}", exc_info=True)
+        bot.answer_callback_query(call.id, f"❌ Error: {str(e)[:100]}", show_alert=True)
 
 def stop_bot_callback(call):
     try:
         _, script_owner_id_str, file_name = call.data.split('_', 2)
         script_owner_id = int(script_owner_id_str)
-        requesting_user_id = call.from_user.id
-        chat_id_for_reply = call.message.chat.id
-
-        if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
-            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True); return
-
-        user_files_list = user_files.get(script_owner_id, [])
-        file_info = next((f for f in user_files_list if f[0] == file_name), None)
-        if not file_info:
-            bot.answer_callback_query(call.id, "⚠️ File not found.", show_alert=True); return
-
-        file_type = file_info[1]
-        script_key = f"{script_owner_id}_{file_name}"
-
-        if not is_bot_running(script_owner_id, file_name):
-            bot.answer_callback_query(call.id, f"⚠️ Already stopped.", show_alert=True)
+        user_id = call.from_user.id
+        
+        if not (user_id == script_owner_id or user_id in admin_ids):
+            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True)
             return
-
+        
+        script_key = f"{script_owner_id}_{file_name}"
+        
+        if not is_bot_running(script_owner_id, file_name):
+            bot.answer_callback_query(call.id, "⚠️ Already stopped.", show_alert=True)
+            return
+        
         bot.answer_callback_query(call.id, f"⏳ Stopping {file_name}...")
+        
         process_info = bot_scripts.get(script_key)
-        if process_info: kill_process_tree(process_info)
-        if script_key in bot_scripts: del bot_scripts[script_key]
-
-        try:
-            bot.edit_message_text(
-                f"⚙️ Controls for: `{file_name}` ({file_type})\nStatus: 🔴 Stopped",
-                chat_id_for_reply, call.message.message_id,
-                reply_markup=create_control_buttons(script_owner_id, file_name, False), parse_mode='Markdown'
-            )
-        except telebot.apihelper.ApiTelegramException as e:
-            if "message is not modified" not in str(e): raise
-    except (ValueError, IndexError) as e:
-        bot.answer_callback_query(call.id, "Error: Invalid stop command.", show_alert=True)
+        if process_info:
+            kill_process_tree(process_info)
+        if script_key in bot_scripts:
+            del bot_scripts[script_key]
+        
+        bot.send_message(call.message.chat.id, f"✅ `{file_name}` stopped.", parse_mode='Markdown')
+        
     except Exception as e:
-        logger.error(f"Error in stop_bot_callback: {e}", exc_info=True)
-        bot.answer_callback_query(call.id, "Error stopping script.", show_alert=True)
+        logger.error(f"❌ Error stopping bot: {e}", exc_info=True)
+        bot.answer_callback_query(call.id, f"❌ Error: {str(e)[:100]}", show_alert=True)
 
 def restart_bot_callback(call):
     try:
         _, script_owner_id_str, file_name = call.data.split('_', 2)
         script_owner_id = int(script_owner_id_str)
-        requesting_user_id = call.from_user.id
-        chat_id_for_reply = call.message.chat.id
-
-        if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
-            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True); return
-
+        user_id = call.from_user.id
+        
+        if not (user_id == script_owner_id or user_id in admin_ids):
+            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True)
+            return
+        
         user_files_list = user_files.get(script_owner_id, [])
         file_info = next((f for f in user_files_list if f[0] == file_name), None)
         if not file_info:
-            bot.answer_callback_query(call.id, "⚠️ File not found.", show_alert=True); return
-
-        file_type = file_info[1]; user_folder = get_user_folder(script_owner_id)
-        file_path = os.path.join(user_folder, file_name); script_key = f"{script_owner_id}_{file_name}"
-
-        if not os.path.exists(file_path):
-            bot.answer_callback_query(call.id, f"⚠️ File missing! Re-upload.", show_alert=True)
-            remove_user_file_db(script_owner_id, file_name)
-            if script_key in bot_scripts: del bot_scripts[script_key]
+            bot.answer_callback_query(call.id, "⚠️ File not found.", show_alert=True)
             return
-
+        
+        file_type = file_info[1]
+        user_folder = get_user_folder(script_owner_id)
+        file_path = os.path.join(user_folder, file_name)
+        script_key = f"{script_owner_id}_{file_name}"
+        
+        if not os.path.exists(file_path):
+            bot.answer_callback_query(call.id, f"⚠️ File missing!", show_alert=True)
+            return
+        
         bot.answer_callback_query(call.id, f"⏳ Restarting {file_name}...")
+        
         if is_bot_running(script_owner_id, file_name):
             process_info = bot_scripts.get(script_key)
-            if process_info: kill_process_tree(process_info)
-            if script_key in bot_scripts: del bot_scripts[script_key]
+            if process_info:
+                kill_process_tree(process_info)
+            if script_key in bot_scripts:
+                del bot_scripts[script_key]
             time.sleep(1.5)
-
+        
         if file_type == 'py':
             threading.Thread(target=run_script, args=(file_path, script_owner_id, user_folder, file_name, call.message)).start()
         elif file_type == 'js':
             threading.Thread(target=run_js_script, args=(file_path, script_owner_id, user_folder, file_name, call.message)).start()
-        else:
-            bot.send_message(chat_id_for_reply, f"❌ Unknown type '{file_type}'."); return
-
-        time.sleep(1.5)
+        
+        time.sleep(2)
         is_now_running = is_bot_running(script_owner_id, file_name)
         status_text = '🟢 Running' if is_now_running else '🟡 Starting...'
-        try:
-            bot.edit_message_text(
-                f"⚙️ Controls for: `{file_name}` ({file_type})\nStatus: {status_text}",
-                chat_id_for_reply, call.message.message_id,
-                reply_markup=create_control_buttons(script_owner_id, file_name, is_now_running), parse_mode='Markdown'
-            )
-        except telebot.apihelper.ApiTelegramException as e:
-            if "message is not modified" not in str(e): raise
-    except (ValueError, IndexError) as e:
-        bot.answer_callback_query(call.id, "Error: Invalid restart command.", show_alert=True)
+        bot.send_message(call.message.chat.id, f"✅ `{file_name}` - {status_text}", parse_mode='Markdown')
+        
     except Exception as e:
-        logger.error(f"Error in restart_bot_callback: {e}", exc_info=True)
-        bot.answer_callback_query(call.id, "Error restarting.", show_alert=True)
+        logger.error(f"❌ Error restarting: {e}", exc_info=True)
+        bot.answer_callback_query(call.id, f"❌ Error: {str(e)[:100]}", show_alert=True)
 
 def delete_bot_callback(call):
     try:
         _, script_owner_id_str, file_name = call.data.split('_', 2)
         script_owner_id = int(script_owner_id_str)
-        requesting_user_id = call.from_user.id
-        chat_id_for_reply = call.message.chat.id
-
-        if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
-            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True); return
-
-        user_files_list = user_files.get(script_owner_id, [])
-        if not any(f[0] == file_name for f in user_files_list):
-            bot.answer_callback_query(call.id, "⚠️ File not found.", show_alert=True); return
-
+        user_id = call.from_user.id
+        
+        if not (user_id == script_owner_id or user_id in admin_ids):
+            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True)
+            return
+        
         bot.answer_callback_query(call.id, f"🗑️ Deleting {file_name}...")
+        
         script_key = f"{script_owner_id}_{file_name}"
         if is_bot_running(script_owner_id, file_name):
             process_info = bot_scripts.get(script_key)
-            if process_info: kill_process_tree(process_info)
-            if script_key in bot_scripts: del bot_scripts[script_key]
-            time.sleep(0.5)
-
+            if process_info:
+                kill_process_tree(process_info)
+            if script_key in bot_scripts:
+                del bot_scripts[script_key]
+        
         user_folder = get_user_folder(script_owner_id)
         file_path = os.path.join(user_folder, file_name)
         log_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
-        deleted_disk = []
+        
         if os.path.exists(file_path):
-            try: os.remove(file_path); deleted_disk.append(file_name)
-            except OSError as e: logger.error(f"Error deleting {file_path}: {e}")
+            os.remove(file_path)
         if os.path.exists(log_path):
-            try: os.remove(log_path); deleted_disk.append(os.path.basename(log_path))
-            except OSError as e: logger.error(f"Error deleting log {log_path}: {e}")
-
+            os.remove(log_path)
+        
         remove_user_file_db(script_owner_id, file_name)
-        deleted_str = ", ".join(f"`{f}`" for f in deleted_disk) if deleted_disk else "associated files"
-        try:
-            bot.edit_message_text(
-                f"🗑️ File `{file_name}` (User `{script_owner_id}`) deleted!\n{deleted_str}",
-                chat_id_for_reply, call.message.message_id, reply_markup=None, parse_mode='Markdown'
-            )
-        except Exception as e:
-            logger.error(f"Error editing msg after delete: {e}")
-            bot.send_message(chat_id_for_reply, f"🗑️ File `{file_name}` deleted.", parse_mode='Markdown')
-    except (ValueError, IndexError) as e:
-        bot.answer_callback_query(call.id, "Error: Invalid delete command.", show_alert=True)
+        
+        bot.send_message(call.message.chat.id, f"✅ `{file_name}` deleted.", parse_mode='Markdown')
+        
     except Exception as e:
-        logger.error(f"Error in delete_bot_callback: {e}", exc_info=True)
-        bot.answer_callback_query(call.id, "Error deleting.", show_alert=True)
+        logger.error(f"❌ Error deleting file: {e}", exc_info=True)
+        bot.answer_callback_query(call.id, f"❌ Error: {str(e)[:100]}", show_alert=True)
 
 def logs_bot_callback(call):
     try:
         _, script_owner_id_str, file_name = call.data.split('_', 2)
         script_owner_id = int(script_owner_id_str)
-        requesting_user_id = call.from_user.id
-        chat_id_for_reply = call.message.chat.id
-
-        if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
-            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True); return
-
+        user_id = call.from_user.id
+        
+        if not (user_id == script_owner_id or user_id in admin_ids):
+            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True)
+            return
+        
+        bot.answer_callback_query(call.id)
+        
         user_folder = get_user_folder(script_owner_id)
         log_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
+        
         if not os.path.exists(log_path):
-            bot.answer_callback_query(call.id, f"⚠️ No logs yet for '{file_name}'.", show_alert=True); return
-
-        bot.answer_callback_query(call.id)
+            bot.send_message(call.message.chat.id, f"📜 No logs yet for `{file_name}`.", parse_mode='Markdown')
+            return
+        
         try:
-            log_content = ""
-            file_size = os.path.getsize(log_path)
-            max_log_kb = 100; max_tg_msg = 4096
-            if file_size == 0: log_content = "(Log empty)"
-            elif file_size > max_log_kb * 1024:
-                with open(log_path, 'rb') as f: f.seek(-max_log_kb * 1024, os.SEEK_END); log_bytes = f.read()
-                log_content = f"(Last {max_log_kb} KB)\n...\n" + log_bytes.decode('utf-8', errors='ignore')
-            else:
-                with open(log_path, 'r', encoding='utf-8', errors='ignore') as f: log_content = f.read()
-            if len(log_content) > max_tg_msg:
-                log_content = log_content[-max_tg_msg:]
-                first_nl = log_content.find('\n')
-                if first_nl != -1: log_content = "...\n" + log_content[first_nl+1:]
-            if not log_content.strip(): log_content = "(No visible content)"
-            bot.send_message(chat_id_for_reply,
-                             f"📜 Logs for `{file_name}` (User `{script_owner_id}`):\n```\n{log_content}\n```",
-                             parse_mode='Markdown')
+            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                log_content = f.read()
+            
+            if not log_content.strip():
+                log_content = "(No output yet)"
+            
+            if len(log_content) > 4000:
+                log_content = log_content[-4000:]
+                log_content = "...(truncated)\n" + log_content
+            
+            bot.send_message(
+                call.message.chat.id,
+                f"📜 *Logs for `{file_name}`:*\n```\n{log_content}\n```",
+                parse_mode='Markdown'
+            )
         except Exception as e:
-            logger.error(f"Error reading log {log_path}: {e}", exc_info=True)
-            bot.send_message(chat_id_for_reply, f"❌ Error reading log.")
-    except (ValueError, IndexError) as e:
-        bot.answer_callback_query(call.id, "Error: Invalid logs command.", show_alert=True)
+            bot.send_message(call.message.chat.id, f"❌ Error reading logs: {e}")
+            
     except Exception as e:
-        logger.error(f"Error in logs_bot_callback: {e}", exc_info=True)
-        bot.answer_callback_query(call.id, "Error fetching logs.", show_alert=True)
+        logger.error(f"❌ Error showing logs: {e}", exc_info=True)
+        bot.answer_callback_query(call.id, f"❌ Error: {str(e)[:100]}", show_alert=True)
 
 def speed_callback(call):
     user_id = call.from_user.id
