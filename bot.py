@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # =============================================================================
-#  STORM HOSTING BOT - DATABASE FIXED
-#  Added proper error handling and logging
+#  STORM HOSTING BOT - FULLY FIXED
+#  Fixed: Database errors, File upload, Keep-alive, Process monitoring
 # =============================================================================
 
 import os
@@ -56,7 +56,7 @@ Path(LOGS_DIR).mkdir(exist_ok=True)
 Path(UPLOADS_DIR).mkdir(exist_ok=True)
 
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed to DEBUG for more details
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.FileHandler(f"{LOGS_DIR}/storm_hosting.log"),
@@ -154,9 +154,9 @@ def init_db():
             INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('bot_locked', '0');
             INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('force_join_channel', '');
             """)
-        logger.info("Database initialized successfully.")
+        logger.info("✅ Database initialized successfully.")
     except Exception as e:
-        logger.error(f"Database initialization error: {e}")
+        logger.error(f"❌ Database initialization error: {e}")
         raise
 
 def load_settings():
@@ -168,9 +168,9 @@ def load_settings():
         bot_locked = settings.get("bot_locked", "0") == "1"
         fc = settings.get("force_join_channel", "")
         force_join_channel = fc if fc else None
-        logger.info(f"Settings loaded. Locked={bot_locked}, ForceJoin={force_join_channel}")
+        logger.info(f"✅ Settings loaded. Locked={bot_locked}, ForceJoin={force_join_channel}")
     except Exception as e:
-        logger.error(f"Error loading settings: {e}")
+        logger.error(f"❌ Error loading settings: {e}")
 
 def save_setting(key: str, value: str):
     try:
@@ -180,7 +180,7 @@ def save_setting(key: str, value: str):
                 (key, value)
             )
     except Exception as e:
-        logger.error(f"Error saving setting {key}: {e}")
+        logger.error(f"❌ Error saving setting {key}: {e}")
 
 # =============================================================================
 #  DATABASE HELPERS
@@ -191,7 +191,7 @@ def db_get_user(user_id: int):
         with get_db() as conn:
             return conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
     except Exception as e:
-        logger.error(f"Error getting user {user_id}: {e}")
+        logger.error(f"❌ Error getting user {user_id}: {e}")
         return None
 
 def db_register_user(user_id: int, name: str, username: str, bio: str = ""):
@@ -203,9 +203,9 @@ def db_register_user(user_id: int, name: str, username: str, bio: str = ""):
                 (user_id, name, username, bio, join_date, last_active)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (user_id, name, username or "", bio, now, now))
-        logger.info(f"Registered user {user_id} ({name})")
+        logger.info(f"✅ Registered user {user_id} ({name})")
     except Exception as e:
-        logger.error(f"Error registering user {user_id}: {e}")
+        logger.error(f"❌ Error registering user {user_id}: {e}")
 
 def db_update_last_active(user_id: int):
     try:
@@ -216,7 +216,7 @@ def db_update_last_active(user_id: int):
                 (now, user_id)
             )
     except Exception as e:
-        logger.error(f"Error updating last_active for {user_id}: {e}")
+        logger.error(f"❌ Error updating last_active for {user_id}: {e}")
 
 def db_update_user_info(user_id: int, name: str, username: str):
     try:
@@ -226,14 +226,14 @@ def db_update_user_info(user_id: int, name: str, username: str):
                 (name, username or "", user_id)
             )
     except Exception as e:
-        logger.error(f"Error updating user info for {user_id}: {e}")
+        logger.error(f"❌ Error updating user info for {user_id}: {e}")
 
 def db_get_all_users() -> list:
     try:
         with get_db() as conn:
             return conn.execute("SELECT * FROM users").fetchall()
     except Exception as e:
-        logger.error(f"Error getting all users: {e}")
+        logger.error(f"❌ Error getting all users: {e}")
         return []
 
 def db_ban_user(user_id: int):
@@ -241,14 +241,14 @@ def db_ban_user(user_id: int):
         with get_db() as conn:
             conn.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (user_id,))
     except Exception as e:
-        logger.error(f"Error banning user {user_id}: {e}")
+        logger.error(f"❌ Error banning user {user_id}: {e}")
 
 def db_unban_user(user_id: int):
     try:
         with get_db() as conn:
             conn.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (user_id,))
     except Exception as e:
-        logger.error(f"Error unbanning user {user_id}: {e}")
+        logger.error(f"❌ Error unbanning user {user_id}: {e}")
 
 def db_set_premium(user_id: int, days: int):
     try:
@@ -259,7 +259,7 @@ def db_set_premium(user_id: int, days: int):
                 (expiry, user_id)
             )
     except Exception as e:
-        logger.error(f"Error setting premium for {user_id}: {e}")
+        logger.error(f"❌ Error setting premium for {user_id}: {e}")
 
 def db_remove_premium(user_id: int):
     try:
@@ -269,7 +269,7 @@ def db_remove_premium(user_id: int):
                 (user_id,)
             )
     except Exception as e:
-        logger.error(f"Error removing premium for {user_id}: {e}")
+        logger.error(f"❌ Error removing premium for {user_id}: {e}")
 
 def db_add_file(user_id: int, file_id: str, filename: str, filepath: str,
                 filetype: str, filesize: int) -> int:
@@ -282,7 +282,7 @@ def db_add_file(user_id: int, file_id: str, filename: str, filepath: str,
             """, (user_id, file_id, filename, filepath, filetype, filesize, now))
             return cur.lastrowid
     except Exception as e:
-        logger.error(f"Error adding file for {user_id}: {e}")
+        logger.error(f"❌ Error adding file for {user_id}: {e}")
         return -1
 
 def db_get_user_files(user_id: int) -> list:
@@ -293,7 +293,7 @@ def db_get_user_files(user_id: int) -> list:
                 (user_id,)
             ).fetchall()
     except Exception as e:
-        logger.error(f"Error getting files for {user_id}: {e}")
+        logger.error(f"❌ Error getting files for {user_id}: {e}")
         return []
 
 def db_get_file(file_id: str):
@@ -301,7 +301,7 @@ def db_get_file(file_id: str):
         with get_db() as conn:
             return conn.execute("SELECT * FROM files WHERE file_id = ?", (file_id,)).fetchone()
     except Exception as e:
-        logger.error(f"Error getting file {file_id}: {e}")
+        logger.error(f"❌ Error getting file {file_id}: {e}")
         return None
 
 def db_delete_file(file_id: str):
@@ -309,7 +309,7 @@ def db_delete_file(file_id: str):
         with get_db() as conn:
             conn.execute("DELETE FROM files WHERE file_id = ?", (file_id,))
     except Exception as e:
-        logger.error(f"Error deleting file {file_id}: {e}")
+        logger.error(f"❌ Error deleting file {file_id}: {e}")
 
 def db_set_file_running(file_id: str, running: bool):
     try:
@@ -319,7 +319,7 @@ def db_set_file_running(file_id: str, running: bool):
                 (1 if running else 0, file_id)
             )
     except Exception as e:
-        logger.error(f"Error setting file running {file_id}: {e}")
+        logger.error(f"❌ Error setting file running {file_id}: {e}")
 
 def db_get_all_files() -> list:
     try:
@@ -328,7 +328,7 @@ def db_get_all_files() -> list:
                 "SELECT f.*, u.name, u.username FROM files f JOIN users u ON f.user_id = u.user_id ORDER BY f.upload_date DESC"
             ).fetchall()
     except Exception as e:
-        logger.error(f"Error getting all files: {e}")
+        logger.error(f"❌ Error getting all files: {e}")
         return []
 
 def db_get_running_files() -> list:
@@ -338,7 +338,7 @@ def db_get_running_files() -> list:
                 "SELECT f.*, u.name, u.username FROM files f JOIN users u ON f.user_id = u.user_id WHERE f.is_running = 1"
             ).fetchall()
     except Exception as e:
-        logger.error(f"Error getting running files: {e}")
+        logger.error(f"❌ Error getting running files: {e}")
         return []
 
 def db_add_log(category: str, message: str, user_id: int = None, level: str = "INFO"):
@@ -350,7 +350,7 @@ def db_add_log(category: str, message: str, user_id: int = None, level: str = "I
                 (now, level, category, user_id, message)
             )
     except Exception as e:
-        logger.error(f"Error adding log: {e}")
+        logger.error(f"❌ Error adding log: {e}")
 
 def db_get_logs(limit: int = 50) -> list:
     try:
@@ -359,7 +359,7 @@ def db_get_logs(limit: int = 50) -> list:
                 "SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
     except Exception as e:
-        logger.error(f"Error getting logs: {e}")
+        logger.error(f"❌ Error getting logs: {e}")
         return []
 
 def db_get_stats() -> dict:
@@ -378,7 +378,7 @@ def db_get_stats() -> dict:
             "banned_users": banned_users,
         }
     except Exception as e:
-        logger.error(f"Error getting stats: {e}")
+        logger.error(f"❌ Error getting stats: {e}")
         return {"total_users": 0, "total_files": 0, "running_files": 0, "premium_users": 0, "banned_users": 0}
 
 # =============================================================================
@@ -535,7 +535,7 @@ def safe_send(chat_id: int, text: str, reply_markup=None, **kwargs):
     try:
         return bot.send_message(chat_id, text, reply_markup=reply_markup, **kwargs)
     except Exception as e:
-        logger.error(f"Failed to send message to {chat_id}: {e}")
+        logger.error(f"❌ Failed to send message to {chat_id}: {e}")
         return None
 
 def set_state(user_id: int, state: str, data: dict = None):
@@ -600,9 +600,9 @@ def kill_all_user_processes(user_id: int):
                         proc.wait(timeout=3)
                     except subprocess.TimeoutExpired:
                         proc.kill()
-                logger.info(f"Killed process for user {user_id}, file {fid}")
+                logger.info(f"✅ Killed process for user {user_id}, file {fid}")
             except Exception as e:
-                logger.error(f"Error killing process {fid}: {e}")
+                logger.error(f"❌ Error killing process {fid}: {e}")
         running_processes[user_id] = {}
     with get_db() as conn:
         conn.execute(
@@ -624,7 +624,7 @@ def kill_single_process(user_id: int, file_id: str) -> bool:
                     proc.kill()
             running_processes[user_id].pop(file_id, None)
         except Exception as e:
-            logger.error(f"Error killing process {file_id}: {e}")
+            logger.error(f"❌ Error killing process {file_id}: {e}")
             return False
     db_set_file_running(file_id, False)
     return True
@@ -662,11 +662,13 @@ def start_file_process(user_id: int, file_id: str, filepath: str, filetype: str)
 
         db_set_file_running(file_id, True)
         db_add_log("RUN", f"Started file {file_id} for user {user_id}", user_id)
+        logger.info(f"✅ Process started: {file_id} (PID {proc.pid})")
         return True, f"✅ Process started (PID {proc.pid})."
     except FileNotFoundError as e:
         return False, f"❌ Runtime not found: {e}. Make sure python/node is installed."
     except Exception as e:
         db_add_log("ERROR", f"Failed to start {file_id}: {e}", user_id, "ERROR")
+        logger.error(f"❌ Failed to start process: {e}")
         return False, f"❌ Failed to start: {e}"
 
 def is_process_alive(user_id: int, file_id: str) -> bool:
@@ -729,36 +731,35 @@ def register_and_notify(message):
         try:
             safe_send(admin_id, notify_text)
         except Exception as e:
-            logger.error(f"Error notifying admin {admin_id}: {e}")
+            logger.error(f"❌ Error notifying admin {admin_id}: {e}")
 
     return True
 
 # =============================================================================
-#  FILE UPLOAD HANDLER - FIXED WITH PROPER ERROR HANDLING
+#  FILE UPLOAD HANDLER
 # =============================================================================
 
 def handle_file_upload(message):
-    """Process uploaded file from user with proper error handling."""
+    """Process uploaded file from user."""
     try:
         user_id = message.from_user.id
         logger.info(f"📁 File upload initiated by user {user_id}")
         
-        # Check if user exists in database, if not register them
         user = db_get_user(user_id)
         if not user:
-            logger.info(f"User {user_id} not found in DB, registering...")
+            logger.info(f"👤 User {user_id} not found in DB, registering...")
             name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
             username = message.from_user.username or ""
             db_register_user(user_id, name, username)
             user = db_get_user(user_id)
             if not user:
-                logger.error(f"Failed to register user {user_id}")
+                logger.error(f"❌ Failed to register user {user_id}")
                 safe_send(user_id, "❌ Error: Could not register user. Please try /start")
                 return
 
         doc = message.document
         if not doc:
-            logger.warning(f"User {user_id} sent message without document")
+            logger.warning(f"⚠️ User {user_id} sent message without document")
             safe_send(user_id, "❌ Please send a document file.", reply_markup=main_menu(user_id))
             return
 
@@ -769,13 +770,13 @@ def handle_file_upload(message):
         logger.info(f"📄 File: {filename}, Size: {filesize}, Extension: {ext}")
 
         if ext not in ALLOWED_EXTENSIONS:
-            logger.warning(f"User {user_id} sent invalid file type: {ext}")
+            logger.warning(f"⚠️ User {user_id} sent invalid file type: {ext}")
             safe_send(user_id, f"❌ File type <b>{ext}</b> not allowed.\n\nAllowed: .py, .js, .zip",
                       reply_markup=main_menu(user_id))
             return
 
         if filesize > MAX_FILE_SIZE_BYTES:
-            logger.warning(f"User {user_id} sent file too large: {filesize}")
+            logger.warning(f"⚠️ User {user_id} sent file too large: {filesize}")
             safe_send(user_id, f"❌ File too large ({format_size(filesize)}).\nMax size: {MAX_FILE_SIZE_MB}MB",
                       reply_markup=main_menu(user_id))
             return
@@ -797,9 +798,9 @@ def handle_file_upload(message):
             downloaded = bot.download_file(file_info.file_path)
             with open(dest_path, "wb") as f:
                 f.write(downloaded)
-            logger.info(f"✅ File {filename} downloaded successfully for user {user_id}")
+            logger.info(f"✅ File {filename} downloaded successfully")
         except Exception as e:
-            logger.error(f"Failed to download file for {user_id}: {e}")
+            logger.error(f"❌ Failed to download file: {e}")
             safe_send(user_id, f"❌ Failed to download file: {e}", reply_markup=main_menu(user_id))
             return
 
@@ -822,7 +823,7 @@ def handle_file_upload(message):
 
         db_add_file(user_id, file_id, filename, str(dest_path), ext, filesize)
         db_add_log("UPLOAD", f"File '{filename}' uploaded by {user_id}", user_id)
-        logger.info(f"✅ File {filename} uploaded successfully by user {user_id}")
+        logger.info(f"✅ File {filename} uploaded successfully")
 
         safe_send(user_id,
                   f"✅ <b>File uploaded successfully!</b>\n\n"
@@ -902,12 +903,12 @@ def cmd_start(message):
     safe_send(user_id, welcome, reply_markup=main_menu(user_id))
 
 # =============================================================================
-#  DOCUMENT UPLOAD HANDLER - NO GUARD DECORATOR
+#  DOCUMENT UPLOAD HANDLER
 # =============================================================================
 
 @bot.message_handler(content_types=["document"])
 def route_document(message):
-    """Handle file uploads - NO GUARD to prevent interference"""
+    """Handle file uploads"""
     try:
         logger.info(f"📎 Document received from {message.from_user.id}")
         handle_file_upload(message)
@@ -1683,11 +1684,11 @@ def thread_premium_expiry():
                         db_add_log("PREMIUM", f"Premium expired for user {u['user_id']}", u["user_id"])
                         safe_send(u["user_id"],
                                   "⏳ <b>Your premium has expired.</b>\nContact the admin to renew.")
-                        logger.info(f"Premium expired for user {u['user_id']}")
+                        logger.info(f"✅ Premium expired for user {u['user_id']}")
                 except Exception as e:
-                    logger.error(f"Error processing premium expiry for {u['user_id']}: {e}")
+                    logger.error(f"❌ Error processing premium expiry for {u['user_id']}: {e}")
         except Exception as e:
-            logger.error(f"Premium expiry thread error: {e}")
+            logger.error(f"❌ Premium expiry thread error: {e}")
         time.sleep(3600)
 
 def thread_process_monitor():
@@ -1700,13 +1701,13 @@ def thread_process_monitor():
                             db_set_file_running(fid, False)
                             del running_processes[uid][fid]
                             db_add_log("PROC_DIED", f"Process {fid} for user {uid} exited", uid)
-                            logger.info(f"Process {fid} for user {uid} exited naturally")
+                            logger.info(f"✅ Process {fid} for user {uid} exited naturally")
         except Exception as e:
-            logger.error(f"Process monitor thread error: {e}")
+            logger.error(f"❌ Process monitor thread error: {e}")
         time.sleep(10)
 
 def thread_auto_restart():
-    logger.info("Auto-restart: checking for files to restart...")
+    logger.info("🔄 Auto-restart: checking for files to restart...")
     try:
         running_files = db_get_running_files()
         for f in running_files:
@@ -1721,17 +1722,17 @@ def thread_auto_restart():
 
             if not os.path.exists(filepath):
                 db_set_file_running(file_id, False)
-                logger.warning(f"Auto-restart: file {filepath} not found, skipping")
+                logger.warning(f"⚠️ Auto-restart: file {filepath} not found, skipping")
                 continue
 
             success, msg = start_file_process(user_id, file_id, filepath, filetype)
             if success:
-                logger.info(f"Auto-restarted file {file_id} for user {user_id}")
+                logger.info(f"✅ Auto-restarted file {file_id} for user {user_id}")
             else:
                 db_set_file_running(file_id, False)
-                logger.error(f"Auto-restart failed for {file_id}: {msg}")
+                logger.error(f"❌ Auto-restart failed for {file_id}: {msg}")
     except Exception as e:
-        logger.error(f"Auto-restart error: {e}")
+        logger.error(f"❌ Auto-restart error: {e}")
 
 def thread_health_check():
     while True:
@@ -1742,11 +1743,11 @@ def thread_health_check():
                 for procs in running_processes.values()
             )
             logger.info(
-                f"Health: users={stats['total_users']}, files={stats['total_files']}, "
+                f"💚 Health: users={stats['total_users']}, files={stats['total_files']}, "
                 f"live_procs={active_procs}, uptime={format_uptime(time.time() - BOT_START_TIME)}"
             )
         except Exception as e:
-            logger.error(f"Health check error: {e}")
+            logger.error(f"❌ Health check error: {e}")
         time.sleep(300)
 
 def start_background_threads():
@@ -1757,7 +1758,7 @@ def start_background_threads():
     ]
     for t in threads:
         t.start()
-        logger.info(f"Started background thread: {t.name}")
+        logger.info(f"✅ Started background thread: {t.name}")
 
 # =============================================================================
 #  ERROR HANDLER
@@ -1775,7 +1776,7 @@ def handle_unsupported(message):
 # =============================================================================
 
 def cleanup_on_exit():
-    logger.info("Bot shutting down — killing all processes...")
+    logger.info("🛑 Bot shutting down — killing all processes...")
     with process_lock:
         for uid, procs in running_processes.items():
             for fid, proc in procs.items():
@@ -1785,7 +1786,7 @@ def cleanup_on_exit():
                         proc.wait(timeout=2)
                 except Exception:
                     pass
-    logger.info("All processes killed. Goodbye.")
+    logger.info("✅ All processes killed. Goodbye.")
 
 # =============================================================================
 #  MAIN ENTRY POINT
@@ -1795,7 +1796,7 @@ def main():
     import atexit
     atexit.register(cleanup_on_exit)
 
-    logger.info("=== STORM HOSTING BOT STARTING ===")
+    logger.info("=== 🚀 STORM HOSTING BOT STARTING ===")
 
     init_db()
     load_settings()
@@ -1806,9 +1807,9 @@ def main():
     thread_auto_restart()
     start_background_threads()
 
-    logger.info(f"Bot configured. Admin IDs: {ADMIN_IDS}")
-    logger.info(f"Bot locked: {bot_locked}, Force join: {force_join_channel}")
-    logger.info("Starting polling...")
+    logger.info(f"✅ Bot configured. Admin IDs: {ADMIN_IDS}")
+    logger.info(f"✅ Bot locked: {bot_locked}, Force join: {force_join_channel}")
+    logger.info("✅ Starting polling...")
 
     while True:
         try:
@@ -1819,10 +1820,10 @@ def main():
                 skip_pending=False,
             )
         except telebot.apihelper.ApiException as e:
-            logger.error(f"Telegram API error: {e}")
+            logger.error(f"❌ Telegram API error: {e}")
             time.sleep(5)
         except Exception as e:
-            logger.error(f"Polling error: {e}\n{traceback.format_exc()}")
+            logger.error(f"❌ Polling error: {e}\n{traceback.format_exc()}")
             time.sleep(5)
 
 if __name__ == "__main__":
