@@ -45,15 +45,15 @@ TOKEN = "8217100195:AAHeIQKkLWqFzPL2yDO8EPS-z9YdSVhKMlk"
 OWNER_ID = 7007475122
 ADMIN_ID = 7007475122
 YOUR_USERNAME = '@ghostof1975'
-UPDATE_CHANNEL = 'https://t.me/LootSenaOfficial'
+UPDATE_CHANNEL = 'https://t.me/alokoul'
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 UPLOAD_BOTS_DIR = os.path.join(BASE_DIR, 'upload_bots')
 IROTECH_DIR = os.path.join(BASE_DIR, 'inf')
 DATABASE_PATH = os.path.join(IROTECH_DIR, 'bot_data.db')
 
-FREE_USER_LIMIT = 1        # Free users: 1 file (enforced by approval system)
-SUBSCRIBED_USER_LIMIT = 1  # Subscribed: 1 file at a time (same approval gate)
+FREE_USER_LIMIT = 10
+SUBSCRIBED_USER_LIMIT = 20
 ADMIN_LIMIT = 999
 OWNER_LIMIT = float('inf')
 
@@ -69,9 +69,7 @@ user_files = {}
 active_users = set()
 admin_ids = {ADMIN_ID, OWNER_ID}
 bot_locked = False
-force_join_channels = {}   # {channel_id_str: channel_name}
-pending_approvals = {}     # {user_id: [(file_name, file_type)]} — waiting admin approval
-approved_files = {}        # {user_id: [(file_name, file_type)]}  — admin approved
+force_join_channels = {}
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO,
@@ -111,14 +109,8 @@ def init_db():
                      (user_id INTEGER PRIMARY KEY)''')
         c.execute('''CREATE TABLE IF NOT EXISTS admins
                      (user_id INTEGER PRIMARY KEY)''')
-        # Force-join channels: admin sets required channels here
         c.execute('''CREATE TABLE IF NOT EXISTS force_join_channels
                      (channel_id TEXT PRIMARY KEY, channel_name TEXT)''')
-        # File approval system
-        c.execute('''CREATE TABLE IF NOT EXISTS file_approvals
-                     (user_id INTEGER, file_name TEXT, file_type TEXT,
-                      status TEXT DEFAULT 'pending',
-                      PRIMARY KEY (user_id, file_name))''')
         c.execute('INSERT OR IGNORE INTO admins (user_id) VALUES (?)', (OWNER_ID,))
         if ADMIN_ID != OWNER_ID:
             c.execute('INSERT OR IGNORE INTO admins (user_id) VALUES (?)', (ADMIN_ID,))
@@ -148,21 +140,9 @@ def load_data():
         active_users.update(user_id for (user_id,) in c.fetchall())
         c.execute('SELECT user_id FROM admins')
         admin_ids.update(user_id for (user_id,) in c.fetchall())
-        # Load force-join channels
         c.execute('SELECT channel_id, channel_name FROM force_join_channels')
         for channel_id, channel_name in c.fetchall():
             force_join_channels[channel_id] = channel_name
-        # Load file approvals
-        c.execute('SELECT user_id, file_name, file_type, status FROM file_approvals')
-        for user_id, file_name, file_type, status in c.fetchall():
-            if status == 'pending':
-                if user_id not in pending_approvals:
-                    pending_approvals[user_id] = []
-                pending_approvals[user_id].append((file_name, file_type))
-            elif status == 'approved':
-                if user_id not in approved_files:
-                    approved_files[user_id] = []
-                approved_files[user_id].append((file_name, file_type))
         conn.close()
         logger.info(f"Data loaded: {len(active_users)} users, {len(user_subscriptions)} subscriptions, "
                     f"{len(admin_ids)} admins, {len(force_join_channels)} force-join channels.")
@@ -214,7 +194,6 @@ def is_bot_running(script_owner_id, file_name):
     return False
 
 def has_any_running_script(user_id):
-    """Check if user already has any script running."""
     files_list = user_files.get(user_id, [])
     for file_name, _ in files_list:
         if is_bot_running(user_id, file_name):
@@ -259,9 +238,8 @@ def kill_process_tree(process_info):
 
 # --- Force Join System ---
 def check_force_join(user_id):
-    """Returns list of channels the user has NOT joined yet."""
     if user_id in admin_ids:
-        return []  # Admins bypass force join
+        return []
     not_joined = []
     for channel_id, channel_name in force_join_channels.items():
         try:
@@ -274,7 +252,6 @@ def check_force_join(user_id):
     return not_joined
 
 def send_force_join_message(chat_id, not_joined_channels):
-    """Send message with join buttons for required channels."""
     markup = types.InlineKeyboardMarkup(row_width=1)
     for channel_id, channel_name in not_joined_channels:
         invite_link = channel_id if channel_id.startswith('http') else f"https://t.me/{channel_id.lstrip('@')}"
@@ -288,111 +265,9 @@ def send_force_join_message(chat_id, not_joined_channels):
         reply_markup=markup
     )
 
-# --- File Approval System ---
+# --- Database Operations ---
 DB_LOCK = threading.Lock()
 
-def save_file_approval(user_id, file_name, file_type, status='pending'):
-    with DB_LOCK:
-        conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
-        c = conn.cursor()
-        try:
-            c.execute('INSERT OR REPLACE INTO file_approvals (user_id, file_name, file_type, status) VALUES (?, ?, ?, ?)',
-                      (user_id, file_name, file_type, status))
-            conn.commit()
-            # Update in-memory dicts
-            if status == 'pending':
-                if user_id not in pending_approvals:
-                    pending_approvals[user_id] = []
-                pending_approvals[user_id] = [(fn, ft) for fn, ft in pending_approvals.get(user_id, []) if fn != file_name]
-                pending_approvals[user_id].append((file_name, file_type))
-                # Remove from approved if it was there
-                if user_id in approved_files:
-                    approved_files[user_id] = [(fn, ft) for fn, ft in approved_files.get(user_id, []) if fn != file_name]
-            elif status == 'approved':
-                if user_id not in approved_files:
-                    approved_files[user_id] = []
-                approved_files[user_id] = [(fn, ft) for fn, ft in approved_files.get(user_id, []) if fn != file_name]
-                approved_files[user_id].append((file_name, file_type))
-                # Remove from pending
-                if user_id in pending_approvals:
-                    pending_approvals[user_id] = [(fn, ft) for fn, ft in pending_approvals.get(user_id, []) if fn != file_name]
-            elif status == 'rejected':
-                if user_id in pending_approvals:
-                    pending_approvals[user_id] = [(fn, ft) for fn, ft in pending_approvals.get(user_id, []) if fn != file_name]
-                if user_id in approved_files:
-                    approved_files[user_id] = [(fn, ft) for fn, ft in approved_files.get(user_id, []) if fn != file_name]
-        except sqlite3.Error as e:
-            logger.error(f"❌ SQLite error saving approval for {user_id},{file_name}: {e}")
-        finally:
-            conn.close()
-
-def remove_file_approval_db(user_id, file_name):
-    with DB_LOCK:
-        conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
-        c = conn.cursor()
-        try:
-            c.execute('DELETE FROM file_approvals WHERE user_id = ? AND file_name = ?', (user_id, file_name))
-            conn.commit()
-            if user_id in pending_approvals:
-                pending_approvals[user_id] = [(fn, ft) for fn, ft in pending_approvals.get(user_id, []) if fn != file_name]
-            if user_id in approved_files:
-                approved_files[user_id] = [(fn, ft) for fn, ft in approved_files.get(user_id, []) if fn != file_name]
-        except sqlite3.Error as e:
-            logger.error(f"❌ SQLite error removing approval for {user_id},{file_name}: {e}")
-        finally:
-            conn.close()
-
-def get_file_approval_status(user_id, file_name):
-    """Returns: 'pending', 'approved', 'rejected', or None"""
-    if user_id in approved_files and any(fn == file_name for fn, _ in approved_files.get(user_id, [])):
-        return 'approved'
-    if user_id in pending_approvals and any(fn == file_name for fn, _ in pending_approvals.get(user_id, [])):
-        return 'pending'
-    return None
-
-def has_approved_file(user_id):
-    """Check if user already has an approved file (blocks new uploads)."""
-    if user_id in admin_ids:
-        return False  # Admins not blocked
-    return bool(approved_files.get(user_id))
-
-def has_pending_file(user_id):
-    """Check if user has a pending approval file."""
-    if user_id in admin_ids:
-        return False
-    return bool(pending_approvals.get(user_id))
-
-# --- Force Join Channel DB Operations ---
-def add_force_channel_db(channel_id, channel_name):
-    with DB_LOCK:
-        conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
-        c = conn.cursor()
-        try:
-            c.execute('INSERT OR REPLACE INTO force_join_channels (channel_id, channel_name) VALUES (?, ?)',
-                      (channel_id, channel_name))
-            conn.commit()
-            force_join_channels[channel_id] = channel_name
-            logger.info(f"Added force-join channel: {channel_id} ({channel_name})")
-        except sqlite3.Error as e:
-            logger.error(f"❌ SQLite error adding force channel {channel_id}: {e}")
-        finally:
-            conn.close()
-
-def remove_force_channel_db(channel_id):
-    with DB_LOCK:
-        conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
-        c = conn.cursor()
-        try:
-            c.execute('DELETE FROM force_join_channels WHERE channel_id = ?', (channel_id,))
-            conn.commit()
-            force_join_channels.pop(channel_id, None)
-            logger.info(f"Removed force-join channel: {channel_id}")
-        except sqlite3.Error as e:
-            logger.error(f"❌ SQLite error removing force channel {channel_id}: {e}")
-        finally:
-            conn.close()
-
-# --- Other Database Operations ---
 def save_user_file(user_id, file_name, file_type='py'):
     with DB_LOCK:
         conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
@@ -482,6 +357,31 @@ def remove_admin_db(admin_id):
                 admin_ids.discard(admin_id)
             return removed
         except sqlite3.Error as e: logger.error(f"❌ SQLite error removing admin {admin_id}: {e}"); return False
+        finally: conn.close()
+
+def add_force_channel_db(channel_id, channel_name):
+    with DB_LOCK:
+        conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
+        c = conn.cursor()
+        try:
+            c.execute('INSERT OR REPLACE INTO force_join_channels (channel_id, channel_name) VALUES (?, ?)',
+                      (channel_id, channel_name))
+            conn.commit()
+            force_join_channels[channel_id] = channel_name
+            logger.info(f"Added force-join channel: {channel_id} ({channel_name})")
+        except sqlite3.Error as e: logger.error(f"❌ SQLite error adding force channel {channel_id}: {e}")
+        finally: conn.close()
+
+def remove_force_channel_db(channel_id):
+    with DB_LOCK:
+        conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
+        c = conn.cursor()
+        try:
+            c.execute('DELETE FROM force_join_channels WHERE channel_id = ?', (channel_id,))
+            conn.commit()
+            force_join_channels.pop(channel_id, None)
+            logger.info(f"Removed force-join channel: {channel_id}")
+        except sqlite3.Error as e: logger.error(f"❌ SQLite error removing force channel {channel_id}: {e}")
         finally: conn.close()
 
 # --- Automatic Package Installation & Script Running ---
@@ -840,9 +740,6 @@ def create_admin_panel():
         types.InlineKeyboardButton('🗑️ Remove Channel', callback_data='remove_force_channel')
     )
     markup.row(types.InlineKeyboardButton('📋 List Channels', callback_data='list_force_channels'))
-    markup.row(
-        types.InlineKeyboardButton('✅ Pending Approvals', callback_data='pending_approvals_list')
-    )
     markup.row(types.InlineKeyboardButton('🔙 Back to Main', callback_data='back_to_main'))
     return markup
 
@@ -919,12 +816,21 @@ def handle_zip_file(downloaded_file_content, file_name_zip, message):
             elif os.path.exists(dest_path): os.remove(dest_path)
             shutil.move(src_path, dest_path)
         save_user_file(user_id, main_script_name, file_type)
-        # Save as pending approval
-        save_file_approval(user_id, main_script_name, file_type, 'pending')
-        notify_admins_for_approval(user_id, main_script_name, file_type, message)
+        
+        # AUTO-RUN - No approval needed
+        file_path = os.path.join(user_folder, main_script_name)
+        if os.path.exists(file_path):
+            if file_type == 'py':
+                threading.Thread(target=run_script,
+                               args=(file_path, user_id, user_folder, main_script_name, message)).start()
+            elif file_type == 'js':
+                threading.Thread(target=run_js_script,
+                               args=(file_path, user_id, user_folder, main_script_name, message)).start()
+        
         bot.reply_to(message,
-            f"✅ Files extracted! Script `{main_script_name}` uploaded.\n\n"
-            f"⏳ *Admin approval ka wait karo. Approve hone ke baad hi script run hogi.*",
+            f"✅ Files extracted! Script `{main_script_name}` uploaded aur start ho gayi!\n\n"
+            f"🟢 Status: Running\n"
+            f"📂 Check Files se manage kar sakte ho.",
             parse_mode='Markdown')
     except zipfile.BadZipFile as e:
         bot.reply_to(message, f"❌ Invalid/corrupted ZIP. {e}")
@@ -939,11 +845,16 @@ def handle_zip_file(downloaded_file_content, file_name_zip, message):
 def handle_js_file(file_path, script_owner_id, user_folder, file_name, message):
     try:
         save_user_file(script_owner_id, file_name, 'js')
-        save_file_approval(script_owner_id, file_name, 'js', 'pending')
-        notify_admins_for_approval(script_owner_id, file_name, 'js', message)
+        
+        # AUTO-RUN - No approval needed
+        if os.path.exists(file_path):
+            threading.Thread(target=run_js_script,
+                           args=(file_path, script_owner_id, user_folder, file_name, message)).start()
+        
         bot.reply_to(message,
-            f"✅ JS script `{file_name}` uploaded!\n\n"
-            f"⏳ *Admin approval ka wait karo. Approve hone ke baad hi script run hogi.*",
+            f"✅ *JS script `{file_name}` uploaded aur start ho gayi!*\n\n"
+            f"🟢 Status: Running\n"
+            f"📂 Check Files se manage kar sakte ho.",
             parse_mode='Markdown')
     except Exception as e:
         logger.error(f"❌ Error processing JS file {file_name}: {e}", exc_info=True)
@@ -952,37 +863,20 @@ def handle_js_file(file_path, script_owner_id, user_folder, file_name, message):
 def handle_py_file(file_path, script_owner_id, user_folder, file_name, message):
     try:
         save_user_file(script_owner_id, file_name, 'py')
-        save_file_approval(script_owner_id, file_name, 'py', 'pending')
-        notify_admins_for_approval(script_owner_id, file_name, 'py', message)
+        
+        # AUTO-RUN - No approval needed
+        if os.path.exists(file_path):
+            threading.Thread(target=run_script,
+                           args=(file_path, script_owner_id, user_folder, file_name, message)).start()
+        
         bot.reply_to(message,
-            f"✅ Python script `{file_name}` uploaded!\n\n"
-            f"⏳ *Admin approval ka wait karo. Approve hone ke baad hi script run hogi.*",
+            f"✅ *Python script `{file_name}` uploaded aur start ho gayi!*\n\n"
+            f"🟢 Status: Running\n"
+            f"📂 Check Files se manage kar sakte ho.",
             parse_mode='Markdown')
     except Exception as e:
         logger.error(f"❌ Error processing Python file {file_name}: {e}", exc_info=True)
         bot.reply_to(message, f"❌ Error processing Python file: {str(e)}")
-
-def notify_admins_for_approval(user_id, file_name, file_type, message):
-    """Notify all admins that a new file needs approval."""
-    user_name = message.from_user.first_name
-    username = message.from_user.username or "N/A"
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.row(
-        types.InlineKeyboardButton("✅ Approve", callback_data=f'approve_{user_id}_{file_name}'),
-        types.InlineKeyboardButton("❌ Reject", callback_data=f'reject_{user_id}_{file_name}')
-    )
-    notification = (
-        f"🆕 *New Script Approval Request*\n\n"
-        f"👤 User: {user_name} (@{username})\n"
-        f"🆔 User ID: `{user_id}`\n"
-        f"📄 File: `{file_name}` ({file_type})\n\n"
-        f"Approve karein to script run hogi, reject karein to delete ho jayegi."
-    )
-    for admin_id in admin_ids:
-        try:
-            bot.send_message(admin_id, notification, parse_mode='Markdown', reply_markup=markup)
-        except Exception as e:
-            logger.error(f"Failed to notify admin {admin_id} for approval: {e}")
 
 # --- Logic Functions ---
 def _logic_send_welcome(message):
@@ -995,7 +889,6 @@ def _logic_send_welcome(message):
         bot.send_message(chat_id, "⚠️ Bot locked by admin. Try later.")
         return
 
-    # Force Join Check
     if force_join_channels:
         not_joined = check_force_join(user_id)
         if not_joined:
@@ -1033,18 +926,10 @@ def _logic_send_welcome(message):
         else: user_status = "🆓 Free User (Expired Sub)"; remove_subscription_db(user_id)
     else: user_status = "🆓 Free User"
 
-    # Pending approval info
-    pending_info = ""
-    if has_pending_file(user_id):
-        pending_info = "\n⏳ *Aapka ek script pending approval mein hai.*"
-    elif has_approved_file(user_id):
-        pending_info = "\n✅ *Aapka script approved hai.*"
-
     welcome_msg_text = (f"〽️ Welcome, {user_name}!\n\n🆔 Your User ID: `{user_id}`\n"
                         f"✳️ Username: `@{user_username or 'Not set'}`\n"
                         f"🔰 Your Status: {user_status}{expiry_info}\n"
-                        f"📁 Files Uploaded: {current_files} / {limit_str}\n"
-                        f"{pending_info}\n\n"
+                        f"📁 Files Uploaded: {current_files} / {limit_str}\n\n"
                         f"🤖 Host & run Python (`.py`) or JS (`.js`) scripts.\n"
                         f"👇 Use buttons or type commands.")
     main_reply_markup = create_reply_keyboard_main_menu(user_id)
@@ -1057,7 +942,6 @@ def _logic_send_welcome(message):
         except Exception: pass
 
 def _force_join_gate(message):
-    """Check force join for any handler. Returns True if user may proceed."""
     user_id = message.from_user.id
     if user_id in admin_ids:
         return True
@@ -1080,21 +964,6 @@ def _logic_upload_file(message):
     if bot_locked and user_id not in admin_ids:
         bot.reply_to(message, "⚠️ Bot locked by admin, cannot accept files.")
         return
-    # Block if user already has an approved file
-    if has_approved_file(user_id):
-        bot.reply_to(message,
-            "⚠️ *Aapke paas pehle se ek approved script hai!*\n\n"
-            "Naya script upload karne ke liye pehle purana approved script delete karo.",
-            parse_mode='Markdown')
-        return
-    # Block if user already has a pending file
-    if has_pending_file(user_id):
-        bot.reply_to(message,
-            "⚠️ *Aapka ek script already admin approval ke liye pending hai.*\n\n"
-            "Approval ka wait karo ya pending script delete karo.",
-            parse_mode='Markdown')
-        return
-    # Check one-script-at-a-time for admins only (regular limit check skipped for approval system)
     file_limit = get_user_file_limit(user_id)
     current_files = get_user_file_count(user_id)
     if current_files >= file_limit and user_id not in admin_ids:
@@ -1107,21 +976,13 @@ def _logic_check_files(message):
     user_id = message.from_user.id
     if not _force_join_gate(message): return
     user_files_list = user_files.get(user_id, [])
-    pending_list = pending_approvals.get(user_id, [])
-    all_list = list(user_files_list)
-    if not all_list and not pending_list:
+    if not user_files_list:
         bot.reply_to(message, "📂 Your files:\n\n(No files uploaded yet)")
         return
     markup = types.InlineKeyboardMarkup(row_width=1)
-    for file_name, file_type in sorted(set(all_list)):
+    for file_name, file_type in sorted(set(user_files_list)):
         is_running = is_bot_running(user_id, file_name)
-        approval_status = get_file_approval_status(user_id, file_name)
-        if approval_status == 'pending':
-            status_icon = "⏳ Pending Approval"
-        elif approval_status == 'approved':
-            status_icon = "🟢 Running" if is_running else "🔴 Stopped"
-        else:
-            status_icon = "🟢 Running" if is_running else "🔴 Stopped"
+        status_icon = "🟢 Running" if is_running else "🔴 Stopped"
         btn_text = f"{file_name} ({file_type}) - {status_icon}"
         markup.add(types.InlineKeyboardButton(btn_text, callback_data=f'file_{user_id}_{file_name}'))
     bot.reply_to(message, "📂 Your files:\nClick to manage.", reply_markup=markup, parse_mode='Markdown')
@@ -1173,12 +1034,10 @@ def _logic_statistics(message):
             running_bots_count += 1
             if int(s_owner_id) == user_id:
                 user_running_bots += 1
-    pending_count = sum(len(v) for v in pending_approvals.values())
     stats_msg_base = (f"📊 Bot Statistics:\n\n"
                       f"👥 Total Users: {total_users}\n"
                       f"📂 Total File Records: {total_files_records}\n"
-                      f"🟢 Total Active Bots: {running_bots_count}\n"
-                      f"⏳ Pending Approvals: {pending_count}\n")
+                      f"🟢 Total Active Bots: {running_bots_count}\n")
     if user_id in admin_ids:
         stats_msg = stats_msg_base + (f"🔒 Bot Status: {'🔴 Locked' if bot_locked else '🟢 Unlocked'}\n"
                                       f"📢 Force Channels: {len(force_join_channels)}\n"
@@ -1226,16 +1085,13 @@ def _logic_run_all_scripts(message_or_call):
     if admin_user_id not in admin_ids:
         reply_func("⚠️ Admin permissions required.")
         return
-    reply_func("⏳ Starting all approved user scripts...")
+    reply_func("⏳ Starting all user scripts...")
     started_count = 0; skipped_files = 0; error_details = []
     all_user_files_snapshot = dict(user_files)
     for target_user_id, files_for_user in all_user_files_snapshot.items():
         if not files_for_user: continue
         user_folder = get_user_folder(target_user_id)
         for file_name, file_type in files_for_user:
-            # Only run approved files
-            if get_file_approval_status(target_user_id, file_name) != 'approved':
-                continue
             if not is_bot_running(target_user_id, file_name):
                 file_path = os.path.join(user_folder, file_name)
                 if os.path.exists(file_path):
@@ -1259,7 +1115,6 @@ def _logic_run_all_scripts(message_or_call):
     reply_func(summary_msg, parse_mode='Markdown')
 
 def _logic_manual_install(message):
-    """Manual package install — available to ALL users."""
     if not _force_join_gate(message): return
     user_id = message.from_user.id
     msg = bot.send_message(
@@ -1273,7 +1128,6 @@ def _logic_manual_install(message):
     bot.register_next_step_handler(msg, process_manual_install)
 
 def manual_install_init_callback(call):
-    """Inline-button handler for Manual Install — ALL users."""
     bot.answer_callback_query(call.id)
     msg = bot.send_message(
         call.message.chat.id,
@@ -1286,7 +1140,6 @@ def manual_install_init_callback(call):
     bot.register_next_step_handler(msg, process_manual_install)
 
 def process_manual_install(message):
-    """Process manual install — all users get standard pip, admins get --break-system-packages."""
     user_id = message.from_user.id
     text = message.text.strip() if message.text else ""
     if text.lower() == '/cancel':
@@ -1299,7 +1152,6 @@ def process_manual_install(message):
         return
     packages = text.split()
     status_msg = bot.reply_to(message, f"⏳ Installing: `{' '.join(packages)}`...", parse_mode='Markdown')
-    # Admins get --break-system-packages, users get standard pip
     if user_id in admin_ids:
         command = [sys.executable, '-m', 'pip', 'install'] + packages + ['--break-system-packages']
     else:
@@ -1385,7 +1237,6 @@ def handle_file_upload_doc(message):
     chat_id = message.chat.id
     doc = message.document
 
-    # Force Join check
     if force_join_channels:
         not_joined = check_force_join(user_id)
         if not_joined:
@@ -1395,21 +1246,6 @@ def handle_file_upload_doc(message):
     if bot_locked and user_id not in admin_ids:
         bot.reply_to(message, "⚠️ Bot locked, cannot accept files.")
         return
-
-    # Check approved file gate (non-admins)
-    if user_id not in admin_ids:
-        if has_approved_file(user_id):
-            bot.reply_to(message,
-                "⚠️ *Aapke paas pehle se ek approved script hai!*\n\n"
-                "Naya script upload karne ke liye pehle purana approved script delete karo.",
-                parse_mode='Markdown')
-            return
-        if has_pending_file(user_id):
-            bot.reply_to(message,
-                "⚠️ *Aapka ek script already admin approval ke liye pending hai.*\n\n"
-                "Approval ka wait karo ya pending script delete karo.",
-                parse_mode='Markdown')
-            return
 
     file_limit = get_user_file_limit(user_id)
     current_files = get_user_file_count(user_id)
@@ -1483,10 +1319,6 @@ def handle_callbacks(call):
             delete_bot_callback(call)
         elif data.startswith('logs_'):
             logs_bot_callback(call)
-        elif data.startswith('approve_'):
-            approve_file_callback(call)
-        elif data.startswith('reject_'):
-            reject_file_callback(call)
         elif data == 'speed':
             speed_callback(call)
         elif data == 'back_to_main':
@@ -1526,8 +1358,6 @@ def handle_callbacks(call):
             admin_required_callback(call, remove_force_channel_callback)
         elif data == 'list_force_channels':
             admin_required_callback(call, list_force_channels_callback)
-        elif data == 'pending_approvals_list':
-            admin_required_callback(call, pending_approvals_list_callback)
         elif data == 'add_subscription':
             admin_required_callback(call, add_subscription_init_callback)
         elif data == 'remove_subscription':
@@ -1554,13 +1384,11 @@ def owner_required_callback(call, func_to_run):
     func_to_run(call)
 
 def check_joined_callback(call):
-    """User clicked 'I joined' — re-check membership."""
     user_id = call.from_user.id
     chat_id = call.message.chat.id
     not_joined = check_force_join(user_id)
     if not_joined:
         bot.answer_callback_query(call.id, "⚠️ Abhi bhi channels join nahi kiye!", show_alert=True)
-        # Update the message with current not-joined channels
         markup = types.InlineKeyboardMarkup(row_width=1)
         for channel_id, channel_name in not_joined:
             invite_link = channel_id if channel_id.startswith('http') else f"https://t.me/{channel_id.lstrip('@')}"
@@ -1573,159 +1401,15 @@ def check_joined_callback(call):
         bot.answer_callback_query(call.id, "✅ Shukriya! Ab bot use kar sakte ho.", show_alert=True)
         try: bot.delete_message(chat_id, call.message.message_id)
         except Exception: pass
-        # Show welcome
         _logic_send_welcome(call.message)
-
-def approve_file_callback(call):
-    """Admin approves a pending script."""
-    if call.from_user.id not in admin_ids:
-        bot.answer_callback_query(call.id, "⚠️ Admin only.", show_alert=True)
-        return
-    try:
-        parts = call.data.split('_', 2)
-        user_id = int(parts[1])
-        file_name = parts[2]
-    except (IndexError, ValueError):
-        bot.answer_callback_query(call.id, "⚠️ Invalid data.", show_alert=True)
-        return
-
-    # Check user has this file
-    user_files_list = user_files.get(user_id, [])
-    file_info = next((f for f in user_files_list if f[0] == file_name), None)
-    if not file_info:
-        bot.answer_callback_query(call.id, "⚠️ File not found for this user.", show_alert=True)
-        return
-
-    file_type = file_info[1]
-    save_file_approval(user_id, file_name, file_type, 'approved')
-    bot.answer_callback_query(call.id, f"✅ Script '{file_name}' approved!", show_alert=True)
-
-    # Update admin message
-    try:
-        bot.edit_message_text(
-            f"✅ *Script Approved*\n\n"
-            f"🆔 User: `{user_id}`\n"
-            f"📄 File: `{file_name}` ({file_type})\n"
-            f"✅ Approved by: {call.from_user.first_name}",
-            call.message.chat.id, call.message.message_id, parse_mode='Markdown'
-        )
-    except Exception: pass
-
-    # Auto-run the script for the user
-    user_folder = get_user_folder(user_id)
-    file_path = os.path.join(user_folder, file_name)
-
-    # Notify user
-    try:
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📂 Check Files", callback_data='check_files'))
-        bot.send_message(user_id,
-            f"🎉 *Aapka script approve ho gaya!*\n\n"
-            f"📄 File: `{file_name}`\n"
-            f"✅ Script automatically start ho rahi hai...",
-            parse_mode='Markdown', reply_markup=markup)
-    except Exception as e:
-        logger.error(f"Failed to notify user {user_id} of approval: {e}")
-
-    # Run the script
-    if os.path.exists(file_path):
-        if file_type == 'py':
-            # Create a dummy message object for the runner
-            threading.Thread(target=_run_approved_script,
-                             args=(file_path, user_id, user_folder, file_name, file_type)).start()
-        elif file_type == 'js':
-            threading.Thread(target=_run_approved_script,
-                             args=(file_path, user_id, user_folder, file_name, file_type)).start()
-
-def _run_approved_script(file_path, user_id, user_folder, file_name, file_type):
-    """Run script after admin approval — uses admin chat for feedback."""
-    script_key = f"{user_id}_{file_name}"
-    log_file_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
-    log_file = None; process = None
-    try:
-        log_file = open(log_file_path, 'w', encoding='utf-8', errors='ignore')
-        cmd = [sys.executable, file_path] if file_type == 'py' else ['node', file_path]
-        startupinfo = None
-        if os.name == 'nt':
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        process = subprocess.Popen(
-            cmd, cwd=user_folder, stdout=log_file, stderr=log_file,
-            stdin=subprocess.PIPE, startupinfo=startupinfo, encoding='utf-8', errors='ignore'
-        )
-        bot_scripts[script_key] = {
-            'process': process, 'log_file': log_file, 'file_name': file_name,
-            'chat_id': user_id, 'script_owner_id': user_id,
-            'start_time': datetime.now(), 'user_folder': user_folder,
-            'type': file_type, 'script_key': script_key
-        }
-        try:
-            bot.send_message(user_id, f"🟢 Script `{file_name}` chal rahi hai! (PID: {process.pid})", parse_mode='Markdown')
-        except Exception: pass
-    except Exception as e:
-        if log_file and not log_file.closed: log_file.close()
-        logger.error(f"Error auto-running approved script {file_name} for {user_id}: {e}")
-        try: bot.send_message(user_id, f"❌ Script start karne mein error: {e}")
-        except Exception: pass
-
-def reject_file_callback(call):
-    """Admin rejects a pending script."""
-    if call.from_user.id not in admin_ids:
-        bot.answer_callback_query(call.id, "⚠️ Admin only.", show_alert=True)
-        return
-    try:
-        parts = call.data.split('_', 2)
-        user_id = int(parts[1])
-        file_name = parts[2]
-    except (IndexError, ValueError):
-        bot.answer_callback_query(call.id, "⚠️ Invalid data.", show_alert=True)
-        return
-
-    # Remove file
-    user_folder = get_user_folder(user_id)
-    file_path = os.path.join(user_folder, file_name)
-    if os.path.exists(file_path):
-        try: os.remove(file_path)
-        except Exception: pass
-    remove_user_file_db(user_id, file_name)
-    remove_file_approval_db(user_id, file_name)
-
-    bot.answer_callback_query(call.id, f"❌ Script '{file_name}' rejected & deleted.", show_alert=True)
-    try:
-        bot.edit_message_text(
-            f"❌ *Script Rejected*\n\n"
-            f"🆔 User: `{user_id}`\n"
-            f"📄 File: `{file_name}`\n"
-            f"❌ Rejected by: {call.from_user.first_name}",
-            call.message.chat.id, call.message.message_id, parse_mode='Markdown'
-        )
-    except Exception: pass
-    try:
-        bot.send_message(user_id,
-            f"❌ *Aapka script reject kar diya gaya.*\n\n"
-            f"📄 File: `{file_name}`\n"
-            f"Dobara upload karein ya admin se contact karein.",
-            parse_mode='Markdown')
-    except Exception as e:
-        logger.error(f"Failed to notify user {user_id} of rejection: {e}")
 
 def upload_callback(call):
     user_id = call.from_user.id
-    # Force Join check
     if force_join_channels:
         not_joined = check_force_join(user_id)
         if not_joined:
             bot.answer_callback_query(call.id)
             send_force_join_message(call.message.chat.id, not_joined)
-            return
-    if user_id not in admin_ids:
-        if has_approved_file(user_id):
-            bot.answer_callback_query(call.id,
-                "⚠️ Pehle approved script delete karo, tab naya upload kar sakte ho.", show_alert=True)
-            return
-        if has_pending_file(user_id):
-            bot.answer_callback_query(call.id,
-                "⚠️ Ek script already pending approval mein hai.", show_alert=True)
             return
     file_limit = get_user_file_limit(user_id)
     current_files = get_user_file_count(user_id)
@@ -1751,13 +1435,7 @@ def check_files_callback(call):
     markup = types.InlineKeyboardMarkup(row_width=1)
     for file_name, file_type in sorted(set(user_files_list)):
         is_running = is_bot_running(user_id, file_name)
-        approval_status = get_file_approval_status(user_id, file_name)
-        if approval_status == 'pending':
-            status_icon = "⏳ Pending Approval"
-        elif approval_status == 'approved':
-            status_icon = "🟢 Running" if is_running else "🔴 Stopped"
-        else:
-            status_icon = "🟢 Running" if is_running else "🔴 Stopped"
+        status_icon = "🟢 Running" if is_running else "🔴 Stopped"
         btn_text = f"{file_name} ({file_type}) - {status_icon}"
         markup.add(types.InlineKeyboardButton(btn_text, callback_data=f'file_{user_id}_{file_name}'))
     markup.add(types.InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main'))
@@ -1782,16 +1460,11 @@ def file_control_callback(call):
             return
         bot.answer_callback_query(call.id)
         is_running = is_bot_running(script_owner_id, file_name)
-        approval_status = get_file_approval_status(script_owner_id, file_name)
-        status_text = '🟢 Running' if is_running else '🔴 Stopped'
-        approval_text = ''
-        if approval_status == 'pending':
-            approval_text = '\n⏳ Status: Pending Admin Approval'
         file_type = next((f[1] for f in user_files_list if f[0] == file_name), '?')
         try:
             bot.edit_message_text(
                 f"⚙️ Controls for: `{file_name}` ({file_type}) of User `{script_owner_id}`\n"
-                f"Status: {status_text}{approval_text}",
+                f"Status: {'🟢 Running' if is_running else '🔴 Stopped'}",
                 call.message.chat.id, call.message.message_id,
                 reply_markup=create_control_buttons(script_owner_id, file_name, is_running),
                 parse_mode='Markdown'
@@ -1815,16 +1488,6 @@ def start_bot_callback(call):
         if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
             bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True); return
 
-        # Check approval status
-        approval_status = get_file_approval_status(script_owner_id, file_name)
-        if approval_status == 'pending' and requesting_user_id not in admin_ids:
-            bot.answer_callback_query(call.id, "⏳ Script admin approval ka wait kar rahi hai.", show_alert=True)
-            return
-        if approval_status != 'approved' and requesting_user_id not in admin_ids:
-            bot.answer_callback_query(call.id, "⚠️ Script approved nahi hai. Admin se contact karo.", show_alert=True)
-            return
-
-        # Check one-script-per-user
         if requesting_user_id not in admin_ids and has_any_running_script(script_owner_id):
             running_scripts = [fn for fn, _ in user_files.get(script_owner_id, []) if is_bot_running(script_owner_id, fn)]
             bot.answer_callback_query(call.id,
@@ -2004,7 +1667,6 @@ def delete_bot_callback(call):
             except OSError as e: logger.error(f"Error deleting log {log_path}: {e}")
 
         remove_user_file_db(script_owner_id, file_name)
-        remove_file_approval_db(script_owner_id, file_name)  # Also clear approval record
         deleted_str = ", ".join(f"`{f}`" for f in deleted_disk) if deleted_disk else "associated files"
         try:
             bot.edit_message_text(
@@ -2308,7 +1970,6 @@ def process_add_force_channel(message):
             return
         channel_id = parts[0].strip()
         channel_name = parts[1].strip()
-        # Verify channel exists and bot is admin
         try:
             chat_info = bot.get_chat(channel_id)
             channel_name = channel_name or chat_info.title or channel_id
@@ -2360,42 +2021,6 @@ def list_force_channels_callback(call):
             reply_markup=create_admin_panel(), parse_mode='Markdown'
         )
     except Exception: pass
-
-def pending_approvals_list_callback(call):
-    """Show admin a list of all pending approvals."""
-    bot.answer_callback_query(call.id)
-    all_pending = []
-    for user_id, files_list in pending_approvals.items():
-        for file_name, file_type in files_list:
-            all_pending.append((user_id, file_name, file_type))
-    if not all_pending:
-        try:
-            bot.edit_message_text(
-                "✅ *Koi pending approval nahi hai.*",
-                call.message.chat.id, call.message.message_id,
-                reply_markup=create_admin_panel(), parse_mode='Markdown'
-            )
-        except Exception: pass
-        return
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    msg_parts = ["⏳ *Pending Approvals:*\n"]
-    for user_id, file_name, file_type in all_pending[:10]:  # Show max 10
-        msg_parts.append(f"👤 User `{user_id}` → `{file_name}` ({file_type})")
-        markup.row(
-            types.InlineKeyboardButton(f"✅ {file_name}", callback_data=f'approve_{user_id}_{file_name}'),
-            types.InlineKeyboardButton(f"❌ Reject", callback_data=f'reject_{user_id}_{file_name}')
-        )
-    if len(all_pending) > 10:
-        msg_parts.append(f"\n...aur {len(all_pending) - 10} aur hain.")
-    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data='admin_panel'))
-    try:
-        bot.edit_message_text(
-            "\n".join(msg_parts),
-            call.message.chat.id, call.message.message_id,
-            reply_markup=markup, parse_mode='Markdown'
-        )
-    except Exception as e:
-        logger.error(f"Error showing pending list: {e}")
 
 # Handle del_fchan_ callbacks
 @bot.callback_query_handler(func=lambda call: call.data.startswith('del_fchan_'))
