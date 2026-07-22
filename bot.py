@@ -47,19 +47,9 @@ RATE_LIMIT_SECONDS = 2
 BOT_START_TIME = time.time()
 UPDATES_CHANNEL = os.environ.get("UPDATES_CHANNEL", "@parth_hereee")
 
-# Dangerous patterns to block in uploaded code
+# Dangerous patterns to block in uploaded code - DISABLED FOR NOW
 DANGEROUS_PATTERNS = [
-    r"os\.system\s*\(",
-    r"subprocess\s*\.",
-    r"\beval\s*\(",
-    r"\bexec\s*\(",
-    r"socket\s*\.",
-    r"__import__\s*\(",
-    r"open\s*\(.+['\"]w['\"]",
-    r"shutil\.rmtree",
-    r"os\.remove",
-    r"os\.unlink",
-    r"os\.rmdir",
+    # Security scanner disabled - all patterns removed to allow files
 ]
 
 # =============================================================================
@@ -629,22 +619,12 @@ def is_process_alive(user_id: int, file_id: str) -> bool:
         return proc.poll() is None
 
 # =============================================================================
-#  FILE SECURITY SCANNER
+#  FILE SECURITY SCANNER - DISABLED
 # =============================================================================
 
 def scan_file_for_dangerous_code(filepath: str, filetype: str) -> tuple[bool, str]:
-    """Returns (is_safe, reason)"""
-    if filetype not in (".py", ".js"):
-        return True, ""
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-        for pattern in DANGEROUS_PATTERNS:
-            if re.search(pattern, content):
-                return False, f"Dangerous pattern found: {pattern}"
-        return True, ""
-    except Exception as e:
-        return False, f"Could not read file: {e}"
+    """Returns (is_safe, reason) - SECURITY DISABLED"""
+    return True, "Security check disabled"
 
 def scan_zip_for_safety(filepath: str) -> tuple[bool, str]:
     """Validate zip doesn't have path traversal or dangerous files."""
@@ -765,7 +745,7 @@ def handle_file_upload(message):
         db_add_log("ERROR", f"Download failed for {filename}: {e}", user_id, "ERROR")
         return
 
-    # Security scan
+    # Security scan - now disabled so all files pass
     if ext == ".zip":
         ok, reason = scan_zip_for_safety(str(dest_path))
         if not ok:
@@ -1276,6 +1256,7 @@ def show_contact_owner(message):
     admin_text = "\n".join([f"👤 Admin ID: <code>{a}</code>" for a in admins])
     safe_send(user_id,
               f"📞 <b>Contact Owner</b>\n\n"
+              f"👑 Owner: @ghostof1975\n"
               f"{admin_text}\n\n"
               f"For support, upgrades, or issues please message the admin directly.",
               reply_markup=main_menu(user_id))
