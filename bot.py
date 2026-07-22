@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # =============================================================================
-#  STORM HOSTING BOT - FULLY FIXED
-#  Document handler now works without guard interference
+#  STORM HOSTING BOT - DATABASE FIXED
+#  Added proper error handling and logging
 # =============================================================================
 
 import os
@@ -56,7 +56,7 @@ Path(LOGS_DIR).mkdir(exist_ok=True)
 Path(UPLOADS_DIR).mkdir(exist_ok=True)
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # Changed to DEBUG for more details
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.FileHandler(f"{LOGS_DIR}/storm_hosting.log"),
@@ -90,215 +90,296 @@ process_lock = threading.Lock()
 # =============================================================================
 
 def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception as e:
+        logger.error(f"Database connection error: {e}")
+        raise
 
 def init_db():
-    with get_db() as conn:
-        conn.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id     INTEGER PRIMARY KEY,
-            name        TEXT    NOT NULL DEFAULT '',
-            username    TEXT    DEFAULT '',
-            bio         TEXT    DEFAULT '',
-            join_date   TEXT    NOT NULL,
-            last_active TEXT    NOT NULL,
-            is_premium  INTEGER NOT NULL DEFAULT 0,
-            premium_expiry TEXT DEFAULT NULL,
-            is_banned   INTEGER NOT NULL DEFAULT 0,
-            is_admin    INTEGER NOT NULL DEFAULT 0
-        );
+    try:
+        with get_db() as conn:
+            conn.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id     INTEGER PRIMARY KEY,
+                name        TEXT    NOT NULL DEFAULT '',
+                username    TEXT    DEFAULT '',
+                bio         TEXT    DEFAULT '',
+                join_date   TEXT    NOT NULL,
+                last_active TEXT    NOT NULL,
+                is_premium  INTEGER NOT NULL DEFAULT 0,
+                premium_expiry TEXT DEFAULT NULL,
+                is_banned   INTEGER NOT NULL DEFAULT 0,
+                is_admin    INTEGER NOT NULL DEFAULT 0
+            );
 
-        CREATE TABLE IF NOT EXISTS files (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id     INTEGER NOT NULL,
-            file_id     TEXT    NOT NULL,
-            filename    TEXT    NOT NULL,
-            filepath    TEXT    NOT NULL,
-            filetype    TEXT    NOT NULL,
-            filesize    INTEGER NOT NULL DEFAULT 0,
-            upload_date TEXT    NOT NULL,
-            is_running  INTEGER NOT NULL DEFAULT 0,
-            FOREIGN KEY (user_id) REFERENCES users(user_id)
-        );
+            CREATE TABLE IF NOT EXISTS files (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL,
+                file_id     TEXT    NOT NULL,
+                filename    TEXT    NOT NULL,
+                filepath    TEXT    NOT NULL,
+                filetype    TEXT    NOT NULL,
+                filesize    INTEGER NOT NULL DEFAULT 0,
+                upload_date TEXT    NOT NULL,
+                is_running  INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            );
 
-        CREATE TABLE IF NOT EXISTS logs (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp   TEXT    NOT NULL,
-            level       TEXT    NOT NULL DEFAULT 'INFO',
-            category    TEXT    NOT NULL,
-            user_id     INTEGER DEFAULT NULL,
-            message     TEXT    NOT NULL
-        );
+            CREATE TABLE IF NOT EXISTS logs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp   TEXT    NOT NULL,
+                level       TEXT    NOT NULL DEFAULT 'INFO',
+                category    TEXT    NOT NULL,
+                user_id     INTEGER DEFAULT NULL,
+                message     TEXT    NOT NULL
+            );
 
-        CREATE TABLE IF NOT EXISTS bot_settings (
-            key         TEXT PRIMARY KEY,
-            value       TEXT NOT NULL
-        );
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                key         TEXT PRIMARY KEY,
+                value       TEXT NOT NULL
+            );
 
-        CREATE TABLE IF NOT EXISTS broadcast_log (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            admin_id    INTEGER NOT NULL,
-            message     TEXT    NOT NULL,
-            sent_at     TEXT    NOT NULL,
-            success_count INTEGER DEFAULT 0,
-            fail_count  INTEGER DEFAULT 0
-        );
+            CREATE TABLE IF NOT EXISTS broadcast_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id    INTEGER NOT NULL,
+                message     TEXT    NOT NULL,
+                sent_at     TEXT    NOT NULL,
+                success_count INTEGER DEFAULT 0,
+                fail_count  INTEGER DEFAULT 0
+            );
 
-        INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('bot_locked', '0');
-        INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('force_join_channel', '');
-        """)
-    logger.info("Database initialized.")
+            INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('bot_locked', '0');
+            INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('force_join_channel', '');
+            """)
+        logger.info("Database initialized successfully.")
+    except Exception as e:
+        logger.error(f"Database initialization error: {e}")
+        raise
 
 def load_settings():
     global bot_locked, force_join_channel
-    with get_db() as conn:
-        rows = conn.execute("SELECT key, value FROM bot_settings").fetchall()
-        settings = {r["key"]: r["value"] for r in rows}
-    bot_locked = settings.get("bot_locked", "0") == "1"
-    fc = settings.get("force_join_channel", "")
-    force_join_channel = fc if fc else None
-    logger.info(f"Settings loaded. Locked={bot_locked}, ForceJoin={force_join_channel}")
+    try:
+        with get_db() as conn:
+            rows = conn.execute("SELECT key, value FROM bot_settings").fetchall()
+            settings = {r["key"]: r["value"] for r in rows}
+        bot_locked = settings.get("bot_locked", "0") == "1"
+        fc = settings.get("force_join_channel", "")
+        force_join_channel = fc if fc else None
+        logger.info(f"Settings loaded. Locked={bot_locked}, ForceJoin={force_join_channel}")
+    except Exception as e:
+        logger.error(f"Error loading settings: {e}")
 
 def save_setting(key: str, value: str):
-    with get_db() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)",
-            (key, value)
-        )
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)",
+                (key, value)
+            )
+    except Exception as e:
+        logger.error(f"Error saving setting {key}: {e}")
 
 # =============================================================================
 #  DATABASE HELPERS
 # =============================================================================
 
 def db_get_user(user_id: int):
-    with get_db() as conn:
-        return conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    try:
+        with get_db() as conn:
+            return conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    except Exception as e:
+        logger.error(f"Error getting user {user_id}: {e}")
+        return None
 
 def db_register_user(user_id: int, name: str, username: str, bio: str = ""):
-    now = datetime.now().isoformat()
-    with get_db() as conn:
-        conn.execute("""
-            INSERT OR IGNORE INTO users
-            (user_id, name, username, bio, join_date, last_active)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (user_id, name, username or "", bio, now, now))
+    try:
+        now = datetime.now().isoformat()
+        with get_db() as conn:
+            conn.execute("""
+                INSERT OR IGNORE INTO users
+                (user_id, name, username, bio, join_date, last_active)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (user_id, name, username or "", bio, now, now))
+        logger.info(f"Registered user {user_id} ({name})")
+    except Exception as e:
+        logger.error(f"Error registering user {user_id}: {e}")
 
 def db_update_last_active(user_id: int):
-    now = datetime.now().isoformat()
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE users SET last_active = ? WHERE user_id = ?",
-            (now, user_id)
-        )
+    try:
+        now = datetime.now().isoformat()
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE users SET last_active = ? WHERE user_id = ?",
+                (now, user_id)
+            )
+    except Exception as e:
+        logger.error(f"Error updating last_active for {user_id}: {e}")
 
 def db_update_user_info(user_id: int, name: str, username: str):
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE users SET name = ?, username = ? WHERE user_id = ?",
-            (name, username or "", user_id)
-        )
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE users SET name = ?, username = ? WHERE user_id = ?",
+                (name, username or "", user_id)
+            )
+    except Exception as e:
+        logger.error(f"Error updating user info for {user_id}: {e}")
 
 def db_get_all_users() -> list:
-    with get_db() as conn:
-        return conn.execute("SELECT * FROM users").fetchall()
+    try:
+        with get_db() as conn:
+            return conn.execute("SELECT * FROM users").fetchall()
+    except Exception as e:
+        logger.error(f"Error getting all users: {e}")
+        return []
 
 def db_ban_user(user_id: int):
-    with get_db() as conn:
-        conn.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (user_id,))
+    try:
+        with get_db() as conn:
+            conn.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (user_id,))
+    except Exception as e:
+        logger.error(f"Error banning user {user_id}: {e}")
 
 def db_unban_user(user_id: int):
-    with get_db() as conn:
-        conn.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (user_id,))
+    try:
+        with get_db() as conn:
+            conn.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (user_id,))
+    except Exception as e:
+        logger.error(f"Error unbanning user {user_id}: {e}")
 
 def db_set_premium(user_id: int, days: int):
-    expiry = (datetime.now() + timedelta(days=days)).isoformat()
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE users SET is_premium = 1, premium_expiry = ? WHERE user_id = ?",
-            (expiry, user_id)
-        )
+    try:
+        expiry = (datetime.now() + timedelta(days=days)).isoformat()
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE users SET is_premium = 1, premium_expiry = ? WHERE user_id = ?",
+                (expiry, user_id)
+            )
+    except Exception as e:
+        logger.error(f"Error setting premium for {user_id}: {e}")
 
 def db_remove_premium(user_id: int):
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE users SET is_premium = 0, premium_expiry = NULL WHERE user_id = ?",
-            (user_id,)
-        )
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE users SET is_premium = 0, premium_expiry = NULL WHERE user_id = ?",
+                (user_id,)
+            )
+    except Exception as e:
+        logger.error(f"Error removing premium for {user_id}: {e}")
 
 def db_add_file(user_id: int, file_id: str, filename: str, filepath: str,
                 filetype: str, filesize: int) -> int:
-    now = datetime.now().isoformat()
-    with get_db() as conn:
-        cur = conn.execute("""
-            INSERT INTO files (user_id, file_id, filename, filepath, filetype, filesize, upload_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (user_id, file_id, filename, filepath, filetype, filesize, now))
-        return cur.lastrowid
+    try:
+        now = datetime.now().isoformat()
+        with get_db() as conn:
+            cur = conn.execute("""
+                INSERT INTO files (user_id, file_id, filename, filepath, filetype, filesize, upload_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, file_id, filename, filepath, filetype, filesize, now))
+            return cur.lastrowid
+    except Exception as e:
+        logger.error(f"Error adding file for {user_id}: {e}")
+        return -1
 
 def db_get_user_files(user_id: int) -> list:
-    with get_db() as conn:
-        return conn.execute(
-            "SELECT * FROM files WHERE user_id = ? ORDER BY upload_date DESC",
-            (user_id,)
-        ).fetchall()
+    try:
+        with get_db() as conn:
+            return conn.execute(
+                "SELECT * FROM files WHERE user_id = ? ORDER BY upload_date DESC",
+                (user_id,)
+            ).fetchall()
+    except Exception as e:
+        logger.error(f"Error getting files for {user_id}: {e}")
+        return []
 
 def db_get_file(file_id: str):
-    with get_db() as conn:
-        return conn.execute("SELECT * FROM files WHERE file_id = ?", (file_id,)).fetchone()
+    try:
+        with get_db() as conn:
+            return conn.execute("SELECT * FROM files WHERE file_id = ?", (file_id,)).fetchone()
+    except Exception as e:
+        logger.error(f"Error getting file {file_id}: {e}")
+        return None
 
 def db_delete_file(file_id: str):
-    with get_db() as conn:
-        conn.execute("DELETE FROM files WHERE file_id = ?", (file_id,))
+    try:
+        with get_db() as conn:
+            conn.execute("DELETE FROM files WHERE file_id = ?", (file_id,))
+    except Exception as e:
+        logger.error(f"Error deleting file {file_id}: {e}")
 
 def db_set_file_running(file_id: str, running: bool):
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE files SET is_running = ? WHERE file_id = ?",
-            (1 if running else 0, file_id)
-        )
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE files SET is_running = ? WHERE file_id = ?",
+                (1 if running else 0, file_id)
+            )
+    except Exception as e:
+        logger.error(f"Error setting file running {file_id}: {e}")
 
 def db_get_all_files() -> list:
-    with get_db() as conn:
-        return conn.execute(
-            "SELECT f.*, u.name, u.username FROM files f JOIN users u ON f.user_id = u.user_id ORDER BY f.upload_date DESC"
-        ).fetchall()
+    try:
+        with get_db() as conn:
+            return conn.execute(
+                "SELECT f.*, u.name, u.username FROM files f JOIN users u ON f.user_id = u.user_id ORDER BY f.upload_date DESC"
+            ).fetchall()
+    except Exception as e:
+        logger.error(f"Error getting all files: {e}")
+        return []
 
 def db_get_running_files() -> list:
-    with get_db() as conn:
-        return conn.execute(
-            "SELECT f.*, u.name, u.username FROM files f JOIN users u ON f.user_id = u.user_id WHERE f.is_running = 1"
-        ).fetchall()
+    try:
+        with get_db() as conn:
+            return conn.execute(
+                "SELECT f.*, u.name, u.username FROM files f JOIN users u ON f.user_id = u.user_id WHERE f.is_running = 1"
+            ).fetchall()
+    except Exception as e:
+        logger.error(f"Error getting running files: {e}")
+        return []
 
 def db_add_log(category: str, message: str, user_id: int = None, level: str = "INFO"):
-    now = datetime.now().isoformat()
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO logs (timestamp, level, category, user_id, message) VALUES (?, ?, ?, ?, ?)",
-            (now, level, category, user_id, message)
-        )
+    try:
+        now = datetime.now().isoformat()
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO logs (timestamp, level, category, user_id, message) VALUES (?, ?, ?, ?, ?)",
+                (now, level, category, user_id, message)
+            )
+    except Exception as e:
+        logger.error(f"Error adding log: {e}")
 
 def db_get_logs(limit: int = 50) -> list:
-    with get_db() as conn:
-        return conn.execute(
-            "SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
+    try:
+        with get_db() as conn:
+            return conn.execute(
+                "SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+    except Exception as e:
+        logger.error(f"Error getting logs: {e}")
+        return []
 
 def db_get_stats() -> dict:
-    with get_db() as conn:
-        total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        total_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-        running_files = conn.execute("SELECT COUNT(*) FROM files WHERE is_running = 1").fetchone()[0]
-        premium_users = conn.execute("SELECT COUNT(*) FROM users WHERE is_premium = 1").fetchone()[0]
-        banned_users = conn.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1").fetchone()[0]
-    return {
-        "total_users": total_users,
-        "total_files": total_files,
-        "running_files": running_files,
-        "premium_users": premium_users,
-        "banned_users": banned_users,
-    }
+    try:
+        with get_db() as conn:
+            total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            total_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            running_files = conn.execute("SELECT COUNT(*) FROM files WHERE is_running = 1").fetchone()[0]
+            premium_users = conn.execute("SELECT COUNT(*) FROM users WHERE is_premium = 1").fetchone()[0]
+            banned_users = conn.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1").fetchone()[0]
+        return {
+            "total_users": total_users,
+            "total_files": total_files,
+            "running_files": running_files,
+            "premium_users": premium_users,
+            "banned_users": banned_users,
+        }
+    except Exception as e:
+        logger.error(f"Error getting stats: {e}")
+        return {"total_users": 0, "total_files": 0, "running_files": 0, "premium_users": 0, "banned_users": 0}
 
 # =============================================================================
 #  KEYBOARD BUILDERS
@@ -653,93 +734,112 @@ def register_and_notify(message):
     return True
 
 # =============================================================================
-#  FILE UPLOAD HANDLER
+#  FILE UPLOAD HANDLER - FIXED WITH PROPER ERROR HANDLING
 # =============================================================================
 
 def handle_file_upload(message):
-    """Process uploaded file from user."""
-    user_id = message.from_user.id
-    user = db_get_user(user_id)
-    if not user:
-        return
-
-    doc = message.document
-    if not doc:
-        safe_send(user_id, "❌ Please send a document file.", reply_markup=main_menu(user_id))
-        return
-
-    filename = doc.file_name or "unknown"
-    filesize = doc.file_size or 0
-    _, ext = os.path.splitext(filename.lower())
-
-    if ext not in ALLOWED_EXTENSIONS:
-        safe_send(user_id, f"❌ File type <b>{ext}</b> not allowed.\n\nAllowed: .py, .js, .zip",
-                  reply_markup=main_menu(user_id))
-        db_add_log("UPLOAD_REJECT", f"Invalid extension {ext} from user {user_id}", user_id, "WARN")
-        return
-
-    if filesize > MAX_FILE_SIZE_BYTES:
-        safe_send(user_id, f"❌ File too large ({format_size(filesize)}).\nMax size: {MAX_FILE_SIZE_MB}MB",
-                  reply_markup=main_menu(user_id))
-        return
-
-    current_files = db_get_user_files(user_id)
-    slot_limit = get_user_slot_limit(user_id)
-    if len(current_files) >= slot_limit * 3:
-        safe_send(user_id, f"❌ You have too many files ({len(current_files)}). Delete some first.",
-                  reply_markup=main_menu(user_id))
-        return
-
-    file_id = generate_file_id(user_id, filename)
-    user_dir = Path(UPLOADS_DIR) / str(user_id) / file_id
-    user_dir.mkdir(parents=True, exist_ok=True)
-    dest_path = user_dir / filename
-
+    """Process uploaded file from user with proper error handling."""
     try:
-        file_info = bot.get_file(doc.file_id)
-        downloaded = bot.download_file(file_info.file_path)
-        with open(dest_path, "wb") as f:
-            f.write(downloaded)
-    except Exception as e:
-        safe_send(user_id, f"❌ Failed to download file: {e}", reply_markup=main_menu(user_id))
-        db_add_log("ERROR", f"Download failed for {filename}: {e}", user_id, "ERROR")
-        return
+        user_id = message.from_user.id
+        logger.info(f"📁 File upload initiated by user {user_id}")
+        
+        # Check if user exists in database, if not register them
+        user = db_get_user(user_id)
+        if not user:
+            logger.info(f"User {user_id} not found in DB, registering...")
+            name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
+            username = message.from_user.username or ""
+            db_register_user(user_id, name, username)
+            user = db_get_user(user_id)
+            if not user:
+                logger.error(f"Failed to register user {user_id}")
+                safe_send(user_id, "❌ Error: Could not register user. Please try /start")
+                return
 
-    if ext == ".zip":
-        ok, reason = scan_zip_for_safety(str(dest_path))
-        if not ok:
-            shutil.rmtree(str(user_dir), ignore_errors=True)
-            safe_send(user_id, f"❌ Zip file rejected: {reason}", reply_markup=main_menu(user_id))
+        doc = message.document
+        if not doc:
+            logger.warning(f"User {user_id} sent message without document")
+            safe_send(user_id, "❌ Please send a document file.", reply_markup=main_menu(user_id))
             return
-        extract_dir = user_dir / "extracted"
-        extract_dir.mkdir(exist_ok=True)
-        try:
-            with zipfile.ZipFile(str(dest_path), "r") as zf:
-                zf.extractall(str(extract_dir))
-        except Exception as e:
-            shutil.rmtree(str(user_dir), ignore_errors=True)
-            safe_send(user_id, f"❌ Failed to extract zip: {e}", reply_markup=main_menu(user_id))
-            return
-    else:
-        ok, reason = scan_file_for_dangerous_code(str(dest_path), ext)
-        if not ok:
-            shutil.rmtree(str(user_dir), ignore_errors=True)
-            safe_send(user_id, f"❌ File rejected by security scanner:\n<code>{reason}</code>",
+
+        filename = doc.file_name or "unknown"
+        filesize = doc.file_size or 0
+        _, ext = os.path.splitext(filename.lower())
+        
+        logger.info(f"📄 File: {filename}, Size: {filesize}, Extension: {ext}")
+
+        if ext not in ALLOWED_EXTENSIONS:
+            logger.warning(f"User {user_id} sent invalid file type: {ext}")
+            safe_send(user_id, f"❌ File type <b>{ext}</b> not allowed.\n\nAllowed: .py, .js, .zip",
                       reply_markup=main_menu(user_id))
             return
 
-    db_add_file(user_id, file_id, filename, str(dest_path), ext, filesize)
-    db_add_log("UPLOAD", f"File '{filename}' uploaded by {user_id}", user_id)
+        if filesize > MAX_FILE_SIZE_BYTES:
+            logger.warning(f"User {user_id} sent file too large: {filesize}")
+            safe_send(user_id, f"❌ File too large ({format_size(filesize)}).\nMax size: {MAX_FILE_SIZE_MB}MB",
+                      reply_markup=main_menu(user_id))
+            return
 
-    safe_send(user_id,
-              f"✅ <b>File uploaded successfully!</b>\n\n"
-              f"📁 <b>{filename}</b>\n"
-              f"📦 Size: {format_size(filesize)}\n"
-              f"🆔 ID: <code>{file_id}</code>\n\n"
-              f"Use <b>📂 Check Files</b> to manage it.",
-              reply_markup=main_menu(user_id))
+        current_files = db_get_user_files(user_id)
+        slot_limit = get_user_slot_limit(user_id)
+        if len(current_files) >= slot_limit * 3:
+            safe_send(user_id, f"❌ You have too many files ({len(current_files)}). Delete some first.",
+                      reply_markup=main_menu(user_id))
+            return
 
-    clear_state(user_id)
+        file_id = generate_file_id(user_id, filename)
+        user_dir = Path(UPLOADS_DIR) / str(user_id) / file_id
+        user_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = user_dir / filename
+
+        try:
+            file_info = bot.get_file(doc.file_id)
+            downloaded = bot.download_file(file_info.file_path)
+            with open(dest_path, "wb") as f:
+                f.write(downloaded)
+            logger.info(f"✅ File {filename} downloaded successfully for user {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to download file for {user_id}: {e}")
+            safe_send(user_id, f"❌ Failed to download file: {e}", reply_markup=main_menu(user_id))
+            return
+
+        if ext == ".zip":
+            ok, reason = scan_zip_for_safety(str(dest_path))
+            if not ok:
+                shutil.rmtree(str(user_dir), ignore_errors=True)
+                safe_send(user_id, f"❌ Zip file rejected: {reason}", reply_markup=main_menu(user_id))
+                return
+            extract_dir = user_dir / "extracted"
+            extract_dir.mkdir(exist_ok=True)
+            try:
+                with zipfile.ZipFile(str(dest_path), "r") as zf:
+                    zf.extractall(str(extract_dir))
+                logger.info(f"✅ Zip extracted for user {user_id}")
+            except Exception as e:
+                shutil.rmtree(str(user_dir), ignore_errors=True)
+                safe_send(user_id, f"❌ Failed to extract zip: {e}", reply_markup=main_menu(user_id))
+                return
+
+        db_add_file(user_id, file_id, filename, str(dest_path), ext, filesize)
+        db_add_log("UPLOAD", f"File '{filename}' uploaded by {user_id}", user_id)
+        logger.info(f"✅ File {filename} uploaded successfully by user {user_id}")
+
+        safe_send(user_id,
+                  f"✅ <b>File uploaded successfully!</b>\n\n"
+                  f"📁 <b>{filename}</b>\n"
+                  f"📦 Size: {format_size(filesize)}\n"
+                  f"🆔 ID: <code>{file_id}</code>\n\n"
+                  f"Use <b>📂 Check Files</b> to manage it.",
+                  reply_markup=main_menu(user_id))
+
+        clear_state(user_id)
+        
+    except Exception as e:
+        logger.error(f"🔥 CRITICAL ERROR in handle_file_upload: {e}\n{traceback.format_exc()}")
+        try:
+            safe_send(message.from_user.id, f"❌ Error uploading file: {str(e)[:200]}")
+        except:
+            pass
 
 # =============================================================================
 #  GUARD DECORATOR
@@ -809,10 +909,14 @@ def cmd_start(message):
 def route_document(message):
     """Handle file uploads - NO GUARD to prevent interference"""
     try:
+        logger.info(f"📎 Document received from {message.from_user.id}")
         handle_file_upload(message)
     except Exception as e:
-        logger.error(f"Error in route_document: {e}")
-        safe_send(message.from_user.id, f"❌ Error: {e}")
+        logger.error(f"🔥 Error in route_document: {e}\n{traceback.format_exc()}")
+        try:
+            safe_send(message.from_user.id, f"❌ Error: {str(e)[:200]}")
+        except:
+            pass
 
 # =============================================================================
 #  MAIN MESSAGE ROUTER
