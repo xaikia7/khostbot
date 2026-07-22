@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # =============================================================================
-#  STORM HOSTING BOT — FULLY FIXED
-#  Fixed: Upload flow, Cancel button, Security disabled, Document handler
+#  STORM HOSTING BOT - FULLY FIXED
+#  Document handler now works without guard interference
 # =============================================================================
 
 import os
@@ -45,7 +45,7 @@ RATE_LIMIT_SECONDS = 2
 BOT_START_TIME = time.time()
 UPDATES_CHANNEL = os.environ.get("UPDATES_CHANNEL", "@parth_hereee")
 
-# Security DISABLED - all patterns removed
+# Security DISABLED
 DANGEROUS_PATTERNS = []
 
 # =============================================================================
@@ -742,7 +742,7 @@ def handle_file_upload(message):
     clear_state(user_id)
 
 # =============================================================================
-#  DECORATORS / GUARDS
+#  GUARD DECORATOR
 # =============================================================================
 
 def guard(func):
@@ -778,15 +778,6 @@ def guard(func):
         return func(message, *args, **kwargs)
     return wrapper
 
-def admin_only(func):
-    @wraps(func)
-    def wrapper(message, *args, **kwargs):
-        if not is_admin(message.from_user.id):
-            safe_send(message.from_user.id, "❌ Admin only.")
-            return
-        return func(message, *args, **kwargs)
-    return wrapper
-
 # =============================================================================
 #  /START COMMAND
 # =============================================================================
@@ -811,6 +802,19 @@ def cmd_start(message):
     safe_send(user_id, welcome, reply_markup=main_menu(user_id))
 
 # =============================================================================
+#  DOCUMENT UPLOAD HANDLER - NO GUARD DECORATOR
+# =============================================================================
+
+@bot.message_handler(content_types=["document"])
+def route_document(message):
+    """Handle file uploads - NO GUARD to prevent interference"""
+    try:
+        handle_file_upload(message)
+    except Exception as e:
+        logger.error(f"Error in route_document: {e}")
+        safe_send(message.from_user.id, f"❌ Error: {e}")
+
+# =============================================================================
 #  MAIN MESSAGE ROUTER
 # =============================================================================
 
@@ -821,7 +825,7 @@ def route_text(message):
     user_id = message.from_user.id
     state = get_state(user_id)
 
-    # ---- CANCEL - ALWAYS WORKS ----
+    # ---- CANCEL ----
     if text == "❌ Cancel":
         clear_state(user_id)
         safe_send(user_id, "✅ Cancelled.", reply_markup=main_menu(user_id))
@@ -944,18 +948,6 @@ def route_text(message):
         safe_send(user_id, "❓ Unknown command. Use the menu buttons below.",
                   reply_markup=main_menu(user_id))
 
-# =============================================================================
-#  DOCUMENT UPLOAD HANDLER - FULLY FIXED
-# =============================================================================
-
-@bot.message_handler(content_types=["document"])
-def route_document(message):
-    """Handle file uploads - NO GUARD DECORATOR"""
-    try:
-        handle_file_upload(message)
-    except Exception as e:
-        logger.error(f"Error in route_document: {e}")
-        safe_send(message.from_user.id, f"❌ Error: {e}")
 # =============================================================================
 #  MAIN MENU HANDLERS
 # =============================================================================
@@ -1668,7 +1660,6 @@ def start_background_threads():
 # =============================================================================
 
 @bot.message_handler(content_types=["photo", "video", "audio", "voice", "sticker", "animation"])
-@guard
 def handle_unsupported(message):
     user_id = message.from_user.id
     safe_send(user_id,
@@ -1729,7 +1720,6 @@ def main():
         except Exception as e:
             logger.error(f"Polling error: {e}\n{traceback.format_exc()}")
             time.sleep(5)
-
 
 if __name__ == "__main__":
     main()
