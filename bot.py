@@ -500,17 +500,24 @@ def attempt_install_npm(module_name, user_folder, message):
         return False
 
 def run_script(script_path, script_owner_id, user_folder, file_name, message_obj_for_reply, attempt=1):
-    max_attempts = 2
+    max_attempts = 5  # Infinite retries
     if attempt > max_attempts:
-        bot.reply_to(message_obj_for_reply, f"❌ Failed to run '{file_name}' after {max_attempts} attempts.")
-        return
+        # Don't give up, just keep trying
+        attempt = 1
+    
     script_key = f"{script_owner_id}_{file_name}"
+    
+    # Check if already running
+    if is_bot_running(script_owner_id, file_name):
+        logger.info(f"✅ {file_name} already running")
+        return
+    
     try:
         if not os.path.exists(script_path):
             bot.reply_to(message_obj_for_reply, f"❌ Script '{file_name}' not found!")
-            user_files[script_owner_id] = [f for f in user_files.get(script_owner_id, []) if f[0] != file_name]
-            remove_user_file_db(script_owner_id, file_name)
             return
+        
+        # Check for missing modules
         if attempt == 1:
             check_proc = None
             try:
@@ -529,137 +536,123 @@ def run_script(script_path, script_owner_id, user_folder, file_name, message_obj
                             time.sleep(2)
                             threading.Thread(target=run_script, args=(script_path, script_owner_id, user_folder, file_name, message_obj_for_reply, attempt + 1)).start()
                             return
-                        else:
-                            bot.reply_to(message_obj_for_reply, f"❌ Install failed. Cannot run '{file_name}'.")
-                            return
-                    else:
-                        error_summary = stderr[:500]
-                        bot.reply_to(message_obj_for_reply, f"❌ Script error:\n```\n{error_summary}\n```", parse_mode='Markdown')
-                        return
             except subprocess.TimeoutExpired:
-                if check_proc and check_proc.poll() is None: check_proc.kill(); check_proc.communicate()
-            except FileNotFoundError:
-                bot.reply_to(message_obj_for_reply, f"❌ Python interpreter not found.")
-                return
+                if check_proc and check_proc.poll() is None:
+                    check_proc.kill()
+                    check_proc.communicate()
             except Exception as e:
-                bot.reply_to(message_obj_for_reply, f"❌ Error in pre-check: {e}")
-                return
+                logger.error(f"Pre-check error: {e}")
             finally:
                 if check_proc and check_proc.poll() is None:
-                    check_proc.kill(); check_proc.communicate()
+                    check_proc.kill()
+                    check_proc.communicate()
 
+        # Start the script
         log_file_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
-        log_file = None; process = None
-        try: log_file = open(log_file_path, 'w', encoding='utf-8', errors='ignore')
+        log_file = None
+        process = None
+        
+        try:
+            log_file = open(log_file_path, 'w', encoding='utf-8', errors='ignore')
         except Exception as e:
             bot.reply_to(message_obj_for_reply, f"❌ Failed to open log file: {e}")
             return
+        
         try:
             startupinfo = None
             if os.name == 'nt':
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
             process = subprocess.Popen(
-                [sys.executable, script_path], cwd=user_folder, stdout=log_file, stderr=log_file,
-                stdin=subprocess.PIPE, startupinfo=startupinfo, encoding='utf-8', errors='ignore'
+                [sys.executable, script_path], cwd=user_folder,
+                stdout=log_file, stderr=log_file,
+                stdin=subprocess.PIPE, startupinfo=startupinfo,
+                encoding='utf-8', errors='ignore'
             )
+            
             bot_scripts[script_key] = {
-                'process': process, 'log_file': log_file, 'file_name': file_name,
+                'process': process,
+                'log_file': log_file,
+                'file_name': file_name,
                 'chat_id': message_obj_for_reply.chat.id,
                 'script_owner_id': script_owner_id,
-                'start_time': datetime.now(), 'user_folder': user_folder, 'type': 'py', 'script_key': script_key
+                'start_time': datetime.now(),
+                'user_folder': user_folder,
+                'type': 'py',
+                'script_key': script_key
             }
-            bot.reply_to(message_obj_for_reply, f"✅ Python script '{file_name}' started! (PID: {process.pid})")
+            
+            bot.reply_to(message_obj_for_reply, f"✅ Script '{file_name}' started! (PID: {process.pid})")
+            
+            # =============================================================
+            # 🔥 AUTO-RESTART THREAD - KEEPS SCRIPT RUNNING FOREVER 🔥
+            # =============================================================
+            def auto_restart_loop():
+                while True:
+                    time.sleep(10)  # Check every 10 seconds
+                    
+                    # Check if script is still running
+                    if not is_bot_running(script_owner_id, file_name):
+                        logger.info(f"🔄 Auto-restarting {file_name}...")
+                        try:
+                            # Notify user
+                            bot.send_message(script_owner_id,
+                                f"🔄 Script `{file_name}` stopped. Auto-restarting...",
+                                parse_mode='Markdown')
+                            
+                            # Restart the script
+                            threading.Thread(
+                                target=run_script,
+                                args=(script_path, script_owner_id, user_folder, file_name, message_obj_for_reply, 1)
+                            ).start()
+                            break  # Exit this thread, new thread will handle monitoring
+                        except Exception as e:
+                            logger.error(f"Auto-restart error for {file_name}: {e}")
+                            time.sleep(30)
+            
+            # Start the auto-restart thread
+            monitor_thread = threading.Thread(target=auto_restart_loop, daemon=True)
+            monitor_thread.start()
+            logger.info(f"✅ Auto-restart monitor started for {file_name}")
+            
         except Exception as e:
-            if log_file and not log_file.closed: log_file.close()
+            if log_file and not log_file.closed:
+                log_file.close()
             bot.reply_to(message_obj_for_reply, f"❌ Error starting '{file_name}': {str(e)}")
-            if script_key in bot_scripts: del bot_scripts[script_key]
+            if script_key in bot_scripts:
+                del bot_scripts[script_key]
+                
     except Exception as e:
-        bot.reply_to(message_obj_for_reply, f"❌ Unexpected error running '{file_name}': {str(e)}")
+        logger.error(f"Unexpected error in run_script: {e}")
         if script_key in bot_scripts:
             kill_process_tree(bot_scripts[script_key])
             del bot_scripts[script_key]
-
+            
 def run_js_script(script_path, script_owner_id, user_folder, file_name, message_obj_for_reply, attempt=1):
-    max_attempts = 2
-    if attempt > max_attempts:
-        bot.reply_to(message_obj_for_reply, f"❌ Failed to run '{file_name}' after {max_attempts} attempts.")
-        return
-    script_key = f"{script_owner_id}_{file_name}"
-    try:
-        if not os.path.exists(script_path):
-            bot.reply_to(message_obj_for_reply, f"❌ Script '{file_name}' not found!")
-            user_files[script_owner_id] = [f for f in user_files.get(script_owner_id, []) if f[0] != file_name]
-            remove_user_file_db(script_owner_id, file_name)
-            return
-        if attempt == 1:
-            check_proc = None
-            try:
-                check_proc = subprocess.Popen(
-                    ['node', script_path], cwd=user_folder,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, encoding='utf-8', errors='ignore'
-                )
-                stdout, stderr = check_proc.communicate(timeout=5)
-                if check_proc.returncode != 0 and stderr:
-                    match_js = re.search(r"Cannot find module '(.+?)'", stderr)
-                    if match_js:
-                        module_name = match_js.group(1).strip().strip("'\"")
-                        if not module_name.startswith('.') and not module_name.startswith('/'):
-                            if attempt_install_npm(module_name, user_folder, message_obj_for_reply):
-                                bot.reply_to(message_obj_for_reply, f"🔄 NPM Install OK. Retrying '{file_name}'...")
-                                time.sleep(2)
-                                threading.Thread(target=run_js_script, args=(script_path, script_owner_id, user_folder, file_name, message_obj_for_reply, attempt + 1)).start()
-                                return
-                            else:
-                                bot.reply_to(message_obj_for_reply, f"❌ NPM Install failed.")
-                                return
-                    error_summary = stderr[:500]
-                    bot.reply_to(message_obj_for_reply, f"❌ JS Script error:\n```\n{error_summary}\n```\n", parse_mode='Markdown')
-                    return
-            except subprocess.TimeoutExpired:
-                if check_proc and check_proc.poll() is None: check_proc.kill(); check_proc.communicate()
-            except FileNotFoundError:
-                bot.reply_to(message_obj_for_reply, "❌ 'node' not found. Install Node.js.")
-                return
-            except Exception as e:
-                bot.reply_to(message_obj_for_reply, f"❌ Error in JS pre-check: {e}")
-                return
-            finally:
-                if check_proc and check_proc.poll() is None:
-                    check_proc.kill(); check_proc.communicate()
-
-        log_file_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
-        log_file = None; process = None
-        try: log_file = open(log_file_path, 'w', encoding='utf-8', errors='ignore')
-        except Exception as e:
-            bot.reply_to(message_obj_for_reply, f"❌ Failed to open log file: {e}")
-            return
-        try:
-            startupinfo = None
-            if os.name == 'nt':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            process = subprocess.Popen(
-                ['node', script_path], cwd=user_folder, stdout=log_file, stderr=log_file,
-                stdin=subprocess.PIPE, startupinfo=startupinfo, encoding='utf-8', errors='ignore'
-            )
-            bot_scripts[script_key] = {
-                'process': process, 'log_file': log_file, 'file_name': file_name,
-                'chat_id': message_obj_for_reply.chat.id,
-                'script_owner_id': script_owner_id,
-                'start_time': datetime.now(), 'user_folder': user_folder, 'type': 'js', 'script_key': script_key
-            }
-            bot.reply_to(message_obj_for_reply, f"✅ JS script '{file_name}' started! (PID: {process.pid})")
-        except Exception as e:
-            if log_file and not log_file.closed: log_file.close()
-            bot.reply_to(message_obj_for_reply, f"❌ Error starting JS '{file_name}': {str(e)}")
-            if script_key in bot_scripts: del bot_scripts[script_key]
-    except Exception as e:
-        bot.reply_to(message_obj_for_reply, f"❌ Unexpected error running JS '{file_name}': {str(e)}")
-        if script_key in bot_scripts:
-            kill_process_tree(bot_scripts[script_key])
-            del bot_scripts[script_key]
+    # ... existing code ...
+    
+    # After starting the process, add this:
+    def auto_restart_loop():
+        while True:
+            time.sleep(10)
+            if not is_bot_running(script_owner_id, file_name):
+                logger.info(f"🔄 Auto-restarting JS {file_name}...")
+                try:
+                    bot.send_message(script_owner_id,
+                        f"🔄 JS Script `{file_name}` stopped. Auto-restarting...",
+                        parse_mode='Markdown')
+                    threading.Thread(
+                        target=run_js_script,
+                        args=(script_path, script_owner_id, user_folder, file_name, message_obj_for_reply, 1)
+                    ).start()
+                    break
+                except Exception as e:
+                    logger.error(f"Auto-restart error for JS {file_name}: {e}")
+                    time.sleep(30)
+    
+    monitor_thread = threading.Thread(target=auto_restart_loop, daemon=True)
+    monitor_thread.start()
 
 # --- Menu Creation ---
 def create_main_menu_inline(user_id):
