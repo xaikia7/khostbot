@@ -1509,21 +1509,22 @@ def check_files_callback(call):
             logger.error(f"Error editing file list: {e}")
 
 def file_control_callback(call):
+    """Handle file management - FIXED"""
     try:
-        data_parts = call.data.split('_', 2)
-        if len(data_parts) < 3:
+        data = call.data
+        logger.info(f"📁 File control callback: {data}")
+        
+        parts = data.split('_', 2)
+        if len(parts) < 3:
             bot.answer_callback_query(call.id, "⚠️ Invalid file action.", show_alert=True)
             return
             
-        action = data_parts[0]
-        script_owner_id = int(data_parts[1])
-        file_name = data_parts[2]
+        script_owner_id = int(parts[1])
+        file_name = parts[2]
         
         requesting_user_id = call.from_user.id
         chat_id = call.message.chat.id
         message_id = call.message.message_id
-        
-        logger.info(f"📁 File action: {action} | User: {requesting_user_id} | File: {file_name}")
         
         if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
             bot.answer_callback_query(call.id, "⚠️ You can only manage your own files.", show_alert=True)
@@ -1582,6 +1583,9 @@ def file_control_callback(call):
             if "message is not modified" not in str(e):
                 bot.send_message(chat_id, control_msg, reply_markup=markup, parse_mode='Markdown')
                 
+    except ValueError as ve:
+        logger.error(f"❌ ValueError in file_control_callback: {ve}")
+        bot.answer_callback_query(call.id, "⚠️ Invalid file data.", show_alert=True)
     except Exception as e:
         logger.error(f"❌ Error in file_control_callback: {e}", exc_info=True)
         try:
