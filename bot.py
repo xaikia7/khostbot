@@ -19,7 +19,7 @@ import sys
 import atexit
 import requests
 
-# --- Flask Keep Alive! ---
+# --- Flask Keep Alive ---
 from flask import Flask
 from threading import Thread
 
@@ -1485,6 +1485,7 @@ def check_files_callback(call):
     user_id = call.from_user.id
     chat_id = call.message.chat.id
     user_files_list = user_files.get(user_id, [])
+    
     if not user_files_list:
         bot.answer_callback_query(call.id, "⚠️ No files uploaded.", show_alert=True)
         try:
@@ -1493,17 +1494,26 @@ def check_files_callback(call):
             bot.edit_message_text("📂 Your files:\n\n(No files uploaded)", chat_id, call.message.message_id, reply_markup=markup)
         except Exception: pass
         return
+    
     bot.answer_callback_query(call.id)
     markup = types.InlineKeyboardMarkup(row_width=1)
+    
     for file_name, file_type in sorted(set(user_files_list)):
         is_running = is_bot_running(user_id, file_name)
         status_icon = "🟢 Running" if is_running else "🔴 Stopped"
         btn_text = f"{file_name} ({file_type}) - {status_icon}"
         markup.add(types.InlineKeyboardButton(btn_text, callback_data=f'file_{user_id}_{file_name}'))
+    
     markup.add(types.InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main'))
+    
     try:
-        bot.edit_message_text("📂 Your files:\nClick to manage.", chat_id, call.message.message_id,
-                              reply_markup=markup, parse_mode='Markdown')
+        bot.edit_message_text(
+            "📂 Your files:\nClick to manage.", 
+            chat_id, 
+            call.message.message_id,
+            reply_markup=markup, 
+            parse_mode='Markdown'
+        )
     except telebot.apihelper.ApiTelegramException as e:
         if "message is not modified" not in str(e):
             logger.error(f"Error editing file list: {e}")
@@ -1513,6 +1523,10 @@ def file_control_callback(call):
     try:
         data = call.data
         logger.info(f"📁 File control callback: {data}")
+        
+        if not data.startswith('file_'):
+            bot.answer_callback_query(call.id, "⚠️ Invalid action.", show_alert=True)
+            return
         
         parts = data.split('_', 2)
         if len(parts) < 3:
