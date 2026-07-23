@@ -1252,6 +1252,197 @@ BUTTON_TEXT_TO_LOGIC = {
     "👑 Admin Panel": _logic_admin_panel,
 }
 
+# --- ADDITIONAL COMMANDS FOR FILE MANAGEMENT ---
+
+@bot.message_handler(commands=['delete'])
+def command_delete_file(message):
+    """Delete a file by serial number: /delete 1"""
+    user_id = message.from_user.id
+    
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message, "❌ Usage: /delete <file_number>\nExample: /delete 1")
+            return
+        
+        file_num = int(parts[1]) - 1
+        user_files_list = user_files.get(user_id, [])
+        
+        if file_num < 0 or file_num >= len(user_files_list):
+            bot.reply_to(message, f"❌ Invalid file number. You have {len(user_files_list)} files. Use /list to see.")
+            return
+        
+        file_name, file_type = user_files_list[file_num]
+        script_key = f"{user_id}_{file_name}"
+        
+        if is_bot_running(user_id, file_name):
+            process_info = bot_scripts.get(script_key)
+            if process_info:
+                kill_process_tree(process_info)
+            if script_key in bot_scripts:
+                del bot_scripts[script_key]
+        
+        user_folder = get_user_folder(user_id)
+        file_path = os.path.join(user_folder, file_name)
+        log_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
+        
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        if os.path.exists(log_path):
+            os.remove(log_path)
+        
+        remove_user_file_db(user_id, file_name)
+        
+        bot.reply_to(message, f"✅ File `{file_name}` deleted successfully!", parse_mode='Markdown')
+        
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid number. Usage: /delete <file_number>")
+    except Exception as e:
+        logger.error(f"Error in delete command: {e}")
+        bot.reply_to(message, f"❌ Error: {str(e)[:100]}")
+
+@bot.message_handler(commands=['off'])
+def command_stop_file(message):
+    """Stop a running file by serial number: /off 1"""
+    user_id = message.from_user.id
+    
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message, "❌ Usage: /off <file_number>\nExample: /off 1")
+            return
+        
+        file_num = int(parts[1]) - 1
+        user_files_list = user_files.get(user_id, [])
+        
+        if file_num < 0 or file_num >= len(user_files_list):
+            bot.reply_to(message, f"❌ Invalid file number. You have {len(user_files_list)} files. Use /list to see.")
+            return
+        
+        file_name, file_type = user_files_list[file_num]
+        script_key = f"{user_id}_{file_name}"
+        
+        if not is_bot_running(user_id, file_name):
+            bot.reply_to(message, f"❌ File `{file_name}` is already stopped.", parse_mode='Markdown')
+            return
+        
+        process_info = bot_scripts.get(script_key)
+        if process_info:
+            kill_process_tree(process_info)
+        if script_key in bot_scripts:
+            del bot_scripts[script_key]
+        
+        bot.reply_to(message, f"⏹️ File `{file_name}` stopped successfully!", parse_mode='Markdown')
+        
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid number. Usage: /off <file_number>")
+    except Exception as e:
+        logger.error(f"Error in off command: {e}")
+        bot.reply_to(message, f"❌ Error: {str(e)[:100]}")
+
+@bot.message_handler(commands=['on'])
+def command_start_file(message):
+    """Start a stopped file by serial number: /on 1"""
+    user_id = message.from_user.id
+    
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message, "❌ Usage: /on <file_number>\nExample: /on 1")
+            return
+        
+        file_num = int(parts[1]) - 1
+        user_files_list = user_files.get(user_id, [])
+        
+        if file_num < 0 or file_num >= len(user_files_list):
+            bot.reply_to(message, f"❌ Invalid file number. You have {len(user_files_list)} files. Use /list to see.")
+            return
+        
+        file_name, file_type = user_files_list[file_num]
+        user_folder = get_user_folder(user_id)
+        file_path = os.path.join(user_folder, file_name)
+        
+        if not os.path.exists(file_path):
+            bot.reply_to(message, f"❌ File `{file_name}` not found on disk!", parse_mode='Markdown')
+            return
+        
+        if is_bot_running(user_id, file_name):
+            bot.reply_to(message, f"✅ File `{file_name}` is already running.", parse_mode='Markdown')
+            return
+        
+        if file_type == 'py':
+            threading.Thread(target=run_script, args=(file_path, user_id, user_folder, file_name, message)).start()
+        elif file_type == 'js':
+            threading.Thread(target=run_js_script, args=(file_path, user_id, user_folder, file_name, message)).start()
+        else:
+            bot.reply_to(message, f"❌ Unknown file type: {file_type}")
+            return
+        
+        time.sleep(1)
+        if is_bot_running(user_id, file_name):
+            bot.reply_to(message, f"🟢 File `{file_name}` started successfully!", parse_mode='Markdown')
+        else:
+            bot.reply_to(message, f"⚠️ File `{file_name}` is starting... Check status with /list", parse_mode='Markdown')
+        
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid number. Usage: /on <file_number>")
+    except Exception as e:
+        logger.error(f"Error in on command: {e}")
+        bot.reply_to(message, f"❌ Error: {str(e)[:100]}")
+
+@bot.message_handler(commands=['list'])
+def command_list_files(message):
+    """List all files with serial numbers: /list"""
+    user_id = message.from_user.id
+    
+    try:
+        user_files_list = user_files.get(user_id, [])
+        
+        if not user_files_list:
+            bot.reply_to(message, "📂 No files uploaded yet.\n\nUse /upload to add files.")
+            return
+        
+        response = "📂 *Your Files:*\n\n"
+        for i, (file_name, file_type) in enumerate(user_files_list, 1):
+            is_running = is_bot_running(user_id, file_name)
+            status = "🟢 Running" if is_running else "🔴 Stopped"
+            response += f"{i}. `{file_name}` ({file_type}) - {status}\n"
+        
+        response += "\n*Commands:*\n/delete <num> - Delete file\n/off <num> - Stop file\n/on <num> - Start file"
+        
+        bot.reply_to(message, response, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Error in list command: {e}")
+        bot.reply_to(message, f"❌ Error: {str(e)[:100]}")
+
+@bot.message_handler(commands=['upload'])
+def command_upload(message):
+    """Upload a file: send file after this command"""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    if force_join_channels:
+        not_joined = check_force_join(user_id)
+        if not_joined:
+            send_force_join_message(chat_id, not_joined)
+            return
+    
+    if bot_locked and user_id not in admin_ids:
+        bot.reply_to(message, "⚠️ Bot locked by admin, cannot accept files.")
+        return
+    
+    file_limit = get_user_file_limit(user_id)
+    current_files = get_user_file_count(user_id)
+    if current_files >= file_limit and user_id not in admin_ids:
+        limit_str = str(file_limit)
+        bot.reply_to(message, f"⚠️ File limit ({current_files}/{limit_str}) reached. Delete files first.")
+        return
+    
+    bot.reply_to(message, "📤 Send your Python (`.py`), JS (`.js`), or ZIP (`.zip`) file.")
+
+# --- End of Additional Commands ---
+
 @bot.message_handler(commands=['start', 'help'])
 def command_send_welcome(message): _logic_send_welcome(message)
 
